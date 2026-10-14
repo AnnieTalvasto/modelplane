@@ -26,6 +26,11 @@ Every series carries `cluster`, `job`, and `instance` labels of the target
 resource. A series about a deployment also carries `deployment`, `replica`,
 `namespace`, `engine`, and `role` labels.
 
+The gateway's `modelplane_frontend_*` series have no `deployment` label. They
+carry the model instead: `gen_ai_original_model` is the model the caller sent,
+`<namespace>/<service>`, and `gen_ai_request_model` is the deployment the gateway
+sent the request to, `<namespace>/<deployment>`.
+
 Each replica publishes its own series, so combine them in your query. Which
 combination is right follows from what the metric measures:
 
@@ -36,7 +41,7 @@ combination is right follows from what the metric measures:
 To combine:
 
 ```promql
-sum by (deployment) (rate(modelplane_frontend_request_duration_seconds_count[5m]))
+sum by (deployment) (modelplane_requests_running)
 ```
 
 The replica is an index rather than a pod, so it's bounded by the replica count
@@ -222,7 +227,7 @@ produces no rates and no quantiles. Your backend does that. A fleet-wide p99:
 
 ```promql
 histogram_quantile(0.99, sum by (le) (
-  rate(modelplane_frontend_ttft_seconds_bucket{deployment="qwen3-8b"}[5m])))
+  rate(modelplane_frontend_ttft_seconds_bucket{gen_ai_request_model="ml-team/qwen3-8b"}[5m])))
 ```
 
 Modelplane has no dashboards of its own. What it exports is counters and histogram buckets, and

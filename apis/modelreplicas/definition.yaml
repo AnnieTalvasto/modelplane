@@ -68,17 +68,38 @@ spec:
                     minLength: 1
               serving:
                 type: object
+                x-kubernetes-validations:
+                - rule: "!has(self.endpointPicker) || (has(self.router) && self.router == 'EndpointPicker')"
+                  message: "serving.endpointPicker may only be set when serving.router is EndpointPicker"
+                - rule: "!has(self.router) || has(self.endpointPicker)"
+                  message: "serving.router EndpointPicker requires serving.endpointPicker with its image and config"
+                - rule: "self.mode != 'PrefillDecode' || (has(self.router) && self.router == 'EndpointPicker')"
+                  message: "PrefillDecode serving requires serving.router EndpointPicker and serving.endpointPicker"
                 description: >-
-                  Serving mode, inherited verbatim from the parent
-                  ModelDeployment. PrefillDecode fronts the engines with an
-                  InferencePool + endpoint picker and role-labels the engine
-                  each marks with its phase; Unified (or absent) fronts them
-                  with a Service.
+                  Serving, inherited verbatim from the parent
+                  ModelDeployment. Both modes front the serving pods with an
+                  InferencePool and an endpoint picker, which endpointPicker
+                  can configure. PrefillDecode also role-labels the engine
+                  each marks with its phase.
                 properties:
                   mode:
                     type: string
                     enum: [Unified, PrefillDecode]
                     default: Unified
+                  router:
+                    type: string
+                    enum: [EndpointPicker]
+                  endpointPicker:
+                    type: object
+                    required: [image, config]
+                    properties:
+                      image:
+                        type: string
+                        minLength: 1
+                      config:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                        minProperties: 1
               engines:
                 type: array
                 description: >-
@@ -154,6 +175,21 @@ spec:
                         x-kubernetes-validations:
                         - rule: "!has(self.worker) || self.role == 'Worker'"
                           message: "worker may only be set on a Worker member"
+                        # The ports of a serving pod: a Standalone member or a Leader. A Worker
+                        # doesn't serve, so these skip it. Keep in sync with apis/modeldeployments/definition.yaml.
+                        # - At most one container declares 8000, where requests arrive.
+                        # - If a container beside the engine declares 8000, the engine declares
+                        #   its http port elsewhere, and if the engine's http port is elsewhere,
+                        #   a container beside it declares 8000.
+                        # - The engine may name port 8000 only http.
+                        - rule: "(has(self.role) && self.role == 'Worker') || !has(self.template.spec) || self.template.spec.containers.filter(c, has(c.ports) && c.ports.exists(p, p.containerPort == 8000)).size() <= 1"
+                          message: "at most one container in a serving pod may declare containerPort 8000"
+                        - rule: "(has(self.role) && self.role == 'Worker') || !has(self.template.spec) || !self.template.spec.containers.exists(c, c.name != 'engine' && has(c.ports) && c.ports.exists(p, p.containerPort == 8000)) || self.template.spec.containers.exists(c, c.name == 'engine' && has(c.ports) && c.ports.exists(p, has(p.name) && p.name == 'http' && p.containerPort != 8000))"
+                          message: "when another container declares containerPort 8000, the engine container must declare its 'http' port on a different port"
+                        - rule: "(has(self.role) && self.role == 'Worker') || !has(self.template.spec) || !self.template.spec.containers.exists(c, c.name == 'engine' && has(c.ports) && c.ports.exists(p, has(p.name) && p.name == 'http' && p.containerPort != 8000)) || self.template.spec.containers.exists(c, c.name != 'engine' && has(c.ports) && c.ports.exists(p, p.containerPort == 8000))"
+                          message: "when the engine container's 'http' port isn't 8000, another container in its pod must declare containerPort 8000"
+                        - rule: "(has(self.role) && self.role == 'Worker') || !has(self.template.spec) || !self.template.spec.containers.exists(c, c.name == 'engine' && has(c.ports) && c.ports.exists(p, p.containerPort == 8000 && has(p.name) && p.name != 'http'))"
+                          message: "the engine container may name containerPort 8000 only 'http'"
                         properties:
                           role:
                             type: string
@@ -291,10 +327,14 @@ spec:
                                   containers:
                                     type: array
                                     minItems: 1
-                                    maxItems: 1
+                                    maxItems: 8
+                                    x-kubernetes-list-type: map
+                                    x-kubernetes-list-map-keys: [name]
                                     x-kubernetes-validations:
                                     - rule: "self.exists_one(c, c.name == 'engine')"
-                                      message: "the single container must be named 'engine'"
+                                      message: "exactly one container must be named 'engine'"
+                                    - rule: "!self.exists(c, c.name == 'engine' && has(c.readinessProbe))"
+                                      message: "the engine container can't set readinessProbe; Modelplane probes it on its http port"
                                     items:
                                       type: object
                                       required: [name, image]
@@ -302,6 +342,8 @@ spec:
                                         name:
                                           type: string
                                           minLength: 1
+                                          maxLength: 63
+                                          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
                                         image:
                                           type: string
                                           minLength: 1
@@ -359,6 +401,92 @@ spec:
                                                         type: string
                                                       apiVersion:
                                                         type: string
+                                        resources:
+                                          type: object
+                                          description: >-
+                                            CPU and memory requests and limits. On the engine container,
+                                            Modelplane adds the member's device claim beside them.
+                                          properties:
+                                            requests:
+                                              type: object
+                                              additionalProperties:
+                                                anyOf: [{type: integer}, {type: string}]
+                                                x-kubernetes-int-or-string: true
+                                            limits:
+                                              type: object
+                                              additionalProperties:
+                                                anyOf: [{type: integer}, {type: string}]
+                                                x-kubernetes-int-or-string: true
+                                        readinessProbe:
+                                          type: object
+                                          description: >-
+                                            How Kubernetes checks that a container beside the engine is
+                                            ready, such as a sidecar on port 8000. The engine container
+                                            can't set one: Modelplane probes the engine on its http port.
+                                          x-kubernetes-validations:
+                                          - rule: "[has(self.httpGet), has(self.tcpSocket), has(self.grpc)].filter(h, h).size() == 1"
+                                            message: "readinessProbe sets exactly one of httpGet, tcpSocket and grpc"
+                                          properties:
+                                            httpGet:
+                                              type: object
+                                              required: [port]
+                                              properties:
+                                                path:
+                                                  type: string
+                                                port:
+                                                  anyOf: [{type: integer}, {type: string}]
+                                                  x-kubernetes-int-or-string: true
+                                            tcpSocket:
+                                              type: object
+                                              required: [port]
+                                              properties:
+                                                port:
+                                                  anyOf: [{type: integer}, {type: string}]
+                                                  x-kubernetes-int-or-string: true
+                                            grpc:
+                                              type: object
+                                              required: [port]
+                                              properties:
+                                                port:
+                                                  type: integer
+                                                service:
+                                                  type: string
+                                            initialDelaySeconds:
+                                              type: integer
+                                              minimum: 0
+                                            periodSeconds:
+                                              type: integer
+                                              minimum: 1
+                                            timeoutSeconds:
+                                              type: integer
+                                              minimum: 1
+                                            successThreshold:
+                                              type: integer
+                                              minimum: 1
+                                            failureThreshold:
+                                              type: integer
+                                              minimum: 1
+                                        ports:
+                                          type: array
+                                          maxItems: 8
+                                          x-kubernetes-list-type: map
+                                          x-kubernetes-list-map-keys: [containerPort]
+                                          x-kubernetes-validations:
+                                          - rule: "self.all(p, !has(p.name) || self.exists_one(q, has(q.name) && q.name == p.name))"
+                                            message: "port names must be unique within a container"
+                                          items:
+                                            type: object
+                                            required: [containerPort]
+                                            properties:
+                                              name:
+                                                type: string
+                                                minLength: 1
+                                                maxLength: 15
+                                                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                                              containerPort:
+                                                type: integer
+                                                minimum: 1
+                                                maximum: 65535
                                   imagePullSecrets:
                                     type: array
                                     items:

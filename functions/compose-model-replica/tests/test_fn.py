@@ -99,6 +99,40 @@ def _model_replica() -> fnv1.Resource:
     return fnv1.Resource(resource=resource.dict_to_struct(xr.model_dump(exclude_none=True, mode="json", by_alias=True)))
 
 
+def _prefill_decode_replica() -> fnv1.Resource:
+    """The ModelReplica XR test-replica in ml-team, serving PrefillDecode with no router or picker config."""
+    xr = v1alpha1.ModelReplica(
+        metadata=metav1.ObjectMeta(name="test-replica", namespace="ml-team"),
+        spec=v1alpha1.SpecModel(
+            clusterName="cluster-a",
+            serving=v1alpha1.Serving(mode="PrefillDecode"),
+            engines=[
+                v1alpha1.Engine(
+                    name=phase.lower(),
+                    phase=phase,
+                    copies=1,
+                    members=[
+                        v1alpha1.Member(
+                            role="Standalone",
+                            nodePoolName="frontier",
+                            deviceRequests=[
+                                v1alpha1.DeviceRequest(name="gpu", deviceClassName="gpu.nvidia.com", count=1),
+                            ],
+                            template=v1alpha1.Template(
+                                spec=v1alpha1.Spec(
+                                    containers=[v1alpha1.Container(name="engine", image="vllm/vllm-openai:latest")],
+                                ),
+                            ),
+                        ),
+                    ],
+                )
+                for phase in ("Prefill", "Decode")
+            ],
+        ),
+    )
+    return fnv1.Resource(resource=resource.dict_to_struct(xr.model_dump(exclude_none=True, mode="json", by_alias=True)))
+
+
 def _cluster(*, provider_config_ref: str | None) -> fnv1.Resource:
     """The InferenceCluster cluster-a, with no status until it reports a providerConfigRef."""
     cluster = {
@@ -324,11 +358,7 @@ def _inference_pool(*, ready: fnv1.Ready) -> fnv1.Resource:
                             "spec": {
                                 "selector": {"matchLabels": {"modelplane.ai/serving": "test-replica"}},
                                 "targetPorts": [{"number": 8000}],
-                                "endpointPickerRef": {
-                                    "name": "test-replica-epp",
-                                    "port": {"number": 9002},
-                                    "failureMode": "FailOpen",
-                                },
+                                "endpointPickerRef": {"name": "test-replica-epp", "port": {"number": 9002}},
                             },
                         }
                     },
@@ -352,9 +382,13 @@ def _epp(*, ready: fnv1.Ready) -> fnv1.Resource:
                 "kind": "Object",
                 "spec": {
                     "providerConfigRef": {"kind": "ClusterProviderConfig", "name": "cluster-a-pc"},
+                    "watch": True,
                     "readiness": {
                         "policy": "DeriveFromCelQuery",
-                        "celQuery": 'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")',
+                        "celQuery": (
+                            'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")'
+                            ' && !object.status.conditions.exists(c, c.type == "Progressing" && c.status == "False")'
+                        ),
                     },
                     "forProvider": {
                         "manifest": {
@@ -372,7 +406,7 @@ def _epp(*, ready: fnv1.Ready) -> fnv1.Resource:
                                             "modelplane.ai/deployment": "my-deployment",
                                         },
                                         "annotations": {
-                                            "modelplane.ai/epp-config-checksum": "20c1dfea3fc4ad41e335cc74edbeb1e8689a607bc4bf7395849ffd2cf0bb2ae1"
+                                            "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
                                         },
                                     },
                                     "spec": {
@@ -387,6 +421,7 @@ def _epp(*, ready: fnv1.Ready) -> fnv1.Resource:
                                                     "--pool-group=inference.networking.k8s.io",
                                                     "--config-file=/config/epp-config.yaml",
                                                     "--grpc-port=9002",
+                                                    "--grpc-health-port=9003",
                                                     "--metrics-port=9090",
                                                     "--metrics-endpoint-auth=false",
                                                 ],
@@ -395,6 +430,7 @@ def _epp(*, ready: fnv1.Ready) -> fnv1.Resource:
                                                     {"name": "grpc-health", "containerPort": 9003},
                                                     {"name": "http", "containerPort": 9090},
                                                 ],
+                                                "readinessProbe": {"grpc": {"port": 9003}, "periodSeconds": 2},
                                                 "volumeMounts": [{"name": "config", "mountPath": "/config"}],
                                             }
                                         ],
@@ -439,7 +475,7 @@ def _epp_config(*, ready: fnv1.Ready) -> fnv1.Resource:
                                     "- type: approx-prefix-cache-producer\n"
                                     "  parameters:\n"
                                     "    autoTune: false\n"
-                                    "    blockSizeTokens: 16\n"
+                                    "    blockSizeTokens: 64\n"
                                     "    maxPrefixBlocksToMatch: 256\n"
                                     "    lruCapacityPerServer: 31250\n"
                                     "- type: prefix-cache-scorer\n"
@@ -656,6 +692,36 @@ def _to_dict(msg: message.Message) -> dict:
 
 
 COMPOSE_CASES = [
+    # A fatal result leaves the replica's existing resources as they are, so
+    # nothing is composed and no condition changes.
+    Case(
+        name="PrefillDecodeRoutingMissing",
+        reason="A PrefillDecode replica without a router or picker config stops with a fatal result and composes nothing.",
+        req=fnv1.RunFunctionRequest(
+            observed=fnv1.State(composite=_prefill_decode_replica()),
+            required_resources={"cluster": fnv1.Resources(items=[_cluster(provider_config_ref="cluster-a-pc")])},
+        ),
+        want=fnv1.RunFunctionResponse(
+            meta=fnv1.ResponseMeta(ttl=durationpb.Duration(seconds=60)),
+            desired=fnv1.State(),
+            results=[
+                fnv1.Result(
+                    severity=fnv1.SEVERITY_FATAL,
+                    message="PrefillDecode serving requires serving.router: EndpointPicker and serving.endpointPicker",
+                ),
+            ],
+            context=structpb.Struct(),
+            requirements=fnv1.Requirements(
+                resources={
+                    "cluster": fnv1.ResourceSelector(
+                        api_version="modelplane.ai/v1alpha1",
+                        kind="InferenceCluster",
+                        match_name="cluster-a",
+                    ),
+                },
+            ),
+        ),
+    ),
     # The function only asserts readiness for a resource it can see in observed
     # state.
     Case(

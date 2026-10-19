@@ -17,7 +17,10 @@
 No generator covers Civo, so Modelplane pins the cloud half by hand,
 in the same shape a generator emits. Where a component also appears on
 a generated cloud, this file states the same pin, so one review moves
-both halves.
+both halves. The DCGM exporter's metrics CSV goes one step further:
+rather than restating it, this file imports it from the shared
+generated/aicr/dcgm.py, which the generator writes only after proving
+every generated cloud carries the same CSV.
 
 Civo pre-installs no GPU stack: its GPU node images ship the NVIDIA
 container toolkit but no driver, and there is no managed GPU Operator
@@ -37,6 +40,7 @@ path.
 import copy
 from dataclasses import replace
 
+from function.stacks.clouds.generated.aicr.dcgm import DCGM_METRICS_CSV
 from function.stacks.components import Chart, Component, Manifests
 
 # The pool label compose-civo-cluster writes on every node pool's nodes.
@@ -174,12 +178,6 @@ COMPONENTS: list[Component] = [
         chart="kube-prometheus-stack",
         repository="https://prometheus-community.github.io/helm-charts",
         version="84.4.0",
-        # gpu-operator below depends on this chart: the DCGM exporter's
-        # ServiceMonitor needs the Prometheus CRDs, which this release
-        # carries itself (its crds subchart stays at its enabled default -
-        # no separate prometheus-operator-crds chart, unlike the generated
-        # clouds). wait=True makes Ready mean healthy, not just deployed.
-        wait=True,
         values={
             "fullnameOverride": "prometheus",
             "prometheus": {
@@ -272,91 +270,30 @@ COMPONENTS: list[Component] = [
         repository="https://helm.ngc.nvidia.com/nvidia",
         version="v26.3.3",
         wait=True,
-        # kube-prometheus-stack, because the DCGM exporter's ServiceMonitor
-        # needs the Prometheus CRDs that release carries. Without the
-        # exporter every modelplane_gpu_* series and
-        # modelplane_energy_joules_total is empty on Civo: the collector's
-        # modelplane-gpu job would find no pod to scrape.
-        depends_on=["node-feature-discovery", "cert-manager", "kube-prometheus-stack"],
+        # No kube-prometheus-stack edge, unlike the generated clouds': the
+        # DCGM exporter's ServiceMonitor, the one piece that would need
+        # the Prometheus CRDs, stays off below. The exporter itself must
+        # run: without it every modelplane_gpu_* series and
+        # modelplane_energy_joules_total is empty on Civo - the
+        # collector's modelplane-gpu job would find no pod to scrape.
+        depends_on=["node-feature-discovery", "cert-manager"],
         values={
             "ccManager": {"enabled": False},
             "cdi": {"default": True, "enabled": True},
             # The operator's DaemonSets must run on the GPU nodes, which
             # carry the nvidia.com/gpu taint from compose-civo-cluster.
             "daemonsets": {"tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}]},
-            # Exporter block mirrors the generated clouds' verbatim; one
-            # review moves both. The CSV carries every field metrics.py
-            # maps, so no modelplane_gpu_* rename lands empty.
+            # The CSV is the generator's, imported from the shared
+            # generated/aicr/dcgm.py. The ServiceMonitor stays off, unlike
+            # the generated clouds': the collector scrapes the exporter
+            # pods directly and Civo's Prometheus selects only
+            # PodMonitors, so nothing would read it - and off explicitly,
+            # so a chart default flip can't render one whose CRD this
+            # cluster doesn't carry.
             "dcgm": {"enabled": True},
             "dcgmExporter": {
-                "config": {
-                    "create": True,
-                    "data": """# Clocks,,
-DCGM_FI_DEV_SM_CLOCK,     gauge, SM clock frequency (in MHz).
-DCGM_FI_DEV_MEM_CLOCK, gauge, Memory clock frequency (in MHz).
-# Temperature,,
-DCGM_FI_DEV_MEMORY_TEMP, gauge, Memory temperature (in C).
-DCGM_FI_DEV_GPU_TEMP,    gauge, GPU temperature (in C).
-# Power,,
-DCGM_FI_DEV_POWER_USAGE,  gauge, Power draw (in W).
-DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION, counter, Total energy consumption since boot (in mJ).
-# PCIe,,
-DCGM_FI_PROF_PCIE_TX_BYTES,  counter, Total number of bytes transmitted through PCIe TX (in KB) via NVML.
-DCGM_FI_PROF_PCIE_RX_BYTES,  counter, Total number of bytes received through PCIe RX (in KB) via NVML.
-DCGM_FI_DEV_PCIE_REPLAY_COUNTER, counter, Total number of PCIe retries.
-# Utilization (the sample period varies depending on the product),,
-DCGM_FI_DEV_GPU_UTIL,      gauge, GPU utilization (in %).
-DCGM_FI_DEV_MEM_COPY_UTIL, gauge, Memory utilization (in %).
-DCGM_FI_DEV_ENC_UTIL,      gauge, Encoder utilization (in %).
-DCGM_FI_DEV_DEC_UTIL,      gauge, Decoder utilization (in %).
-# Errors and violations,,
-DCGM_FI_DEV_XID_ERRORS,            gauge, Value of the last XID error encountered.
-DCGM_FI_DEV_POWER_VIOLATION,       counter, Throttling duration due to power constraints (in us).
-DCGM_FI_DEV_THERMAL_VIOLATION,     counter, Throttling duration due to thermal constraints (in us).
-DCGM_FI_DEV_SYNC_BOOST_VIOLATION,  counter, Throttling duration due to sync-boost constraints (in us).
-DCGM_FI_DEV_BOARD_LIMIT_VIOLATION, counter, Throttling duration due to board limit constraints (in us).
-DCGM_FI_DEV_LOW_UTIL_VIOLATION,    counter, Throttling duration due to low utilization (in us).
-DCGM_FI_DEV_RELIABILITY_VIOLATION, counter, Throttling duration due to reliability constraints (in us).
-# Memory usage,,
-DCGM_FI_DEV_FB_FREE, gauge, Framebuffer memory free (in MiB).
-DCGM_FI_DEV_FB_USED, gauge, Framebuffer memory used (in MiB).
-# Retired pages,,
-DCGM_FI_DEV_RETIRED_SBE,     counter, Total number of retired pages due to single-bit errors.
-DCGM_FI_DEV_RETIRED_DBE,     counter, Total number of retired pages due to double-bit errors.
-DCGM_FI_DEV_RETIRED_PENDING, counter, Total number of pages pending retirement.
-# NVLink,,
-DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL, counter, Total number of NVLink bandwidth counters for all lanes
-DCGM_FI_PROF_NVLINK_TX_BYTES,       counter, The rate of data transmitted over NVLink not including protocol headers in bytes per second.
-DCGM_FI_PROF_NVLINK_RX_BYTES,       counter, The rate of data received over NVLink not including protocol headers in bytes per second.
-# Add DCP metrics,,
-DCGM_FI_PROF_GR_ENGINE_ACTIVE,   gauge, Ratio of time the graphics engine is active (in %).
-DCGM_FI_PROF_SM_ACTIVE,          gauge, The ratio of cycles an SM has at least 1 warp assigned (in %).
-DCGM_FI_PROF_SM_OCCUPANCY,       gauge, The ratio of number of warps resident on an SM (in %).
-DCGM_FI_PROF_PIPE_TENSOR_ACTIVE, gauge, Ratio of cycles the tensor (HMMA) pipe is active (in %).
-DCGM_FI_PROF_DRAM_ACTIVE,        gauge, Ratio of cycles the device memory interface is active sending or receiving data (in %).
-DCGM_FI_PROF_PCIE_TX_BYTES,      counter, The number of bytes of active pcie tx data including both header and payload.
-DCGM_FI_PROF_PCIE_RX_BYTES,      counter, The number of bytes of active pcie rx data including both header and payload.
-# BCP Additional metrics
-DCGM_FI_DEV_GPU_NVLINK_ERRORS,      gauge, Identifies a GPU NVLink error type returned by DCGM_FI_DEV_GPU_NVLINK_ERRORS.
-# Added RunAI Additional metrics https://docs.run.ai/latest/developer/metrics/metrics-api/#advanced-metrics
-## NVLink
-DCGM_FI_DEV_NVLINK_BANDWIDTH_L0, counter, The number of bytes of active NVLink rx or tx data including both header and payload.
-## VGPU License status
-DCGM_FI_DEV_VGPU_LICENSE_STATUS, gauge, vGPU License status
-## Remapped rows
-DCGM_FI_DEV_UNCORRECTABLE_REMAPPED_ROWS, counter, Number of remapped rows for uncorrectable errors
-DCGM_FI_DEV_CORRECTABLE_REMAPPED_ROWS, counter, Number of remapped rows for correctable errors
-DCGM_FI_DEV_ROW_REMAP_FAILURE, gauge, Whether remapping of rows has failed
-## Static configuration information. These appear as labels on the other metrics
-DCGM_FI_DRIVER_VERSION, label, Driver Version
-## Profiling metrics
-DCGM_FI_PROF_PIPE_FP64_ACTIVE, gauge, Ratio of cycles the fp64 pipes are active (in %).
-DCGM_FI_PROF_PIPE_FP32_ACTIVE, gauge, Ratio of cycles the fp32 pipes are active (in %).
-DCGM_FI_PROF_PIPE_FP16_ACTIVE, gauge, Ratio of cycles the fp16 pipes are active (in %).
-""",
-                    "name": "dcgm-exporter",
-                },
-                "serviceMonitor": {"enabled": True, "honorLabels": True, "interval": "30s"},
+                "config": {"create": True, "data": DCGM_METRICS_CSV, "name": "dcgm-exporter"},
+                "serviceMonitor": {"enabled": False},
             },
             # The DRA driver is the sole GPU allocator: the device
             # plugin's nvidia.com/gpu ledger would book the same physical

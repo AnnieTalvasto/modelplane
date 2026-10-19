@@ -31,6 +31,7 @@ import dataclasses
 import pytest
 from function import stacks
 from function.stacks.clouds import civo
+from function.stacks.clouds.generated.aicr import dcgm
 
 
 @dataclasses.dataclass
@@ -186,10 +187,31 @@ def test_join_fails_closed(case: JoinFailsClosedCase) -> None:
         stacks.join(case.cloud, case.stack)  # ty: ignore[invalid-argument-type]  # cases pass values outside the Literals
 
 
+@pytest.mark.parametrize("cloud", ["AKS", "EKS", "GKE"])
+def test_generated_dcgm_csv(cloud: str) -> None:
+    """Each generated cloud's inline DCGM exporter CSV is the shared one.
+
+    The generated files carry the CSV inline to stay self-contained,
+    and the hand-written clouds that run the exporter import
+    generated/aicr/dcgm.py instead of restating it. emit_dcgm
+    proves the copies identical at generation time; this asserts the
+    files on disk still agree, so a hand edit to any one copy - or a
+    partial regeneration that slipped past the generator's guard -
+    can't silently leave a hand-written cloud's exporter config behind
+    the generated clouds'.
+    """
+    joined = stacks.join(cloud, "Standard")  # ty: ignore[invalid-argument-type]  # parametrize erases the Literal
+    operator = next(c for c in joined if isinstance(c, stacks.Chart) and c.key == "gpu-operator")
+    assert operator.values is not None
+    assert operator.values["dcgmExporter"]["config"]["data"] == dcgm.DCGM_METRICS_CSV
+
+
 # Civo's DCGM exporter metrics CSV, restated once rather than beside each
 # want: both wants carry it verbatim, and it is too long to repeat without
 # burying the driver values each case is actually about. Still a literal
-# independent of civo.py, so a drift there breaks the cases.
+# independent of the shared generated/aicr/dcgm.py civo.py imports, so a
+# generator-moved CSV still fails these cases until a human confirms the
+# move suits Civo.
 _DCGM_METRICS_CSV = """# Clocks,,
 DCGM_FI_DEV_SM_CLOCK,     gauge, SM clock frequency (in MHz).
 DCGM_FI_DEV_MEM_CLOCK, gauge, Memory clock frequency (in MHz).
@@ -279,7 +301,7 @@ WITH_NVLINK_DISABLED_CASES = [
                 repository="https://helm.ngc.nvidia.com/nvidia",
                 version="v26.3.3",
                 wait=True,
-                depends_on=["node-feature-discovery", "cert-manager", "kube-prometheus-stack"],
+                depends_on=["node-feature-discovery", "cert-manager"],
                 values={
                     "ccManager": {"enabled": False},
                     "cdi": {"default": True, "enabled": True},
@@ -289,7 +311,7 @@ WITH_NVLINK_DISABLED_CASES = [
                     "dcgm": {"enabled": True},
                     "dcgmExporter": {
                         "config": {"create": True, "data": _DCGM_METRICS_CSV, "name": "dcgm-exporter"},
-                        "serviceMonitor": {"enabled": True, "honorLabels": True, "interval": "30s"},
+                        "serviceMonitor": {"enabled": False},
                     },
                     "devicePlugin": {"enabled": False},
                     "driver": {
@@ -387,7 +409,7 @@ WITH_NVLINK_DISABLED_CASES = [
                 repository="https://helm.ngc.nvidia.com/nvidia",
                 version="v26.3.3",
                 wait=True,
-                depends_on=["node-feature-discovery", "cert-manager", "kube-prometheus-stack"],
+                depends_on=["node-feature-discovery", "cert-manager"],
                 values={
                     "ccManager": {"enabled": False},
                     "cdi": {"default": True, "enabled": True},
@@ -397,7 +419,7 @@ WITH_NVLINK_DISABLED_CASES = [
                     "dcgm": {"enabled": True},
                     "dcgmExporter": {
                         "config": {"create": True, "data": _DCGM_METRICS_CSV, "name": "dcgm-exporter"},
-                        "serviceMonitor": {"enabled": True, "honorLabels": True, "interval": "30s"},
+                        "serviceMonitor": {"enabled": False},
                     },
                     "devicePlugin": {"enabled": False},
                     "driver": {

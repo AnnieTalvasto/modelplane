@@ -202,6 +202,7 @@ functions/compose-serving-stack/function/stacks/
     eks.py             # Written by nix run .#stacks. Never edited.
     aks.py
     gke.py             # Needs Modelplane's gke-cos profile fork; see below.
+    dcgm.py            # The DCGM exporter metrics CSV the clouds share; see below.
   common.py            # Hand-written. Modelplane's own, on every stack.
   standard.py          # Hand-written. Modelplane's own, where the stacks differ.
   dynamo.py
@@ -305,6 +306,17 @@ hand-written files hold everything else. The criterion is where the version
 comes from.
 The DRA driver targets the contract and is still AICR's, because its version
 depends on the hardware.
+
+One generated value flows into the hand-written files rather than being
+restated: the DCGM exporter's metrics CSV. A hand-written cloud that installs
+the exporter runs the same one the generated clouds do, and a ~50-line CSV
+copy per file would be enforced only by review discipline. So the generator
+also writes `generated/aicr/dcgm.py` — the CSV, emitted once every regenerated
+cloud carried it byte-identical, failing closed when the clouds diverge or
+when a partial regeneration would move the shared module under clouds that
+didn't regenerate — and the hand-written files import it. The generated cloud
+files keep their inline copies and stay self-contained; a test asserts the
+copies on disk still match the shared module.
 
 The allowlist drops kai-scheduler for a different reason. AICR carries it in
 its base for every cluster, and taking that placement would even be harmless at

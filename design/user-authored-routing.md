@@ -136,11 +136,11 @@ The API changes in three places:
 1. `serving.router` names the router the user writes. Its one value is
    `EndpointPicker`. It's required under `PrefillDecode` and optional under
    `Unified`.
-2. `serving.endpointPicker` sets the picker's image and configuration, which
-   are set together. It's valid only with `router: EndpointPicker`, and
-   required under `PrefillDecode`.
-3. A member's template can hold containers beside `engine`, and a container can
-   declare `ports`.
+2. `serving.endpointPicker` sets the picker's image and configuration, both
+   required. It's set exactly when `router` is.
+3. A member's template can hold containers beside `engine`. A container can
+   declare `ports` and `resources`, and a container beside the engine can set
+   a `readinessProbe`.
 
 A `PrefillDecode` deployment writes its routing in the `ModelDeployment`. This
 is the decode member of a vLLM deployment with NIXL. The comments mark each part
@@ -169,6 +169,10 @@ engines:
           - --vllm-port=8001
           ports:
           - containerPort: 8000
+          readinessProbe:            # ready once it listens
+            httpGet:
+              path: /health
+              port: 8000
         - name: engine
           image: vllm/vllm-openai:v0.23.0
           args:
@@ -208,34 +212,33 @@ can't check for it.
 
 ### Unified serving
 
-A `Unified` deployment that doesn't set `router` gets its cluster's routing. On
-every cluster today, that's llm-d's picker with Modelplane's default
-configuration, which reads the block size from `--block-size` or `--page-size`,
-or uses vLLM's default of 16. A `Unified` deployment can set `router:
-EndpointPicker` to tune the picker.
+A `Unified` deployment that doesn't set `router` gets llm-d's picker with
+Modelplane's default configuration. The configuration reads the block size from
+`--block-size` or `--page-size`, and uses at least 64, the smallest llm-d's
+picker accepts. A `Unified` deployment can set `router: EndpointPicker` with
+its own image and configuration to tune the picker.
 
 ### Placement
 
 `router: EndpointPicker` runs only on a cluster that composes an InferencePool
-for a picker the user names. Each `InferenceCluster` lists the routers it can
-compose in `status.routers`, which `compose-inference-cluster` sets from the
-cluster's serving stack. Every cluster today lists `EndpointPicker`, on either
-stack. With the stack-aware placement in #418, the scheduler places a deployment
-that sets `router` only on those clusters, and reports `ReplicasScheduled=False`
-when none qualify.
+for a picker the user names. Every cluster does, on either serving stack, so
+placement doesn't need to check. Stack-aware placement (#418) adds an
+`InferenceCluster.status.routers` list of the routers a cluster can compose,
+places a deployment that sets `router` only on clusters that list it, and
+reports `ReplicasScheduled=False` when none qualify.
 
 ### The endpoint picker
 
-`serving.endpointPicker` is valid only with `router: EndpointPicker`:
+`serving.endpointPicker` is set exactly when `router: EndpointPicker` is:
 
 - `image` is the picker image, and `config` is its configuration. Modelplane
   passes the configuration to the picker and doesn't validate it.
-- `image` and `config` are set together. The configuration format changes
-  between router releases. A configuration states the picker it's for, and a
-  pinned picker never runs Modelplane's default configuration.
+- Both are required. The configuration format changes between router releases,
+  so a configuration states the picker it's for. A pinned picker runs only its
+  own configuration.
 - A `config` replaces the default whole. Modelplane doesn't merge them.
-- A `Unified` deployment that omits both gets Modelplane's picker and default
-  configuration.
+- A `Unified` deployment that omits `router` gets Modelplane's picker and
+  default configuration. A deployment that sets `router` writes its own.
 
 Modelplane runs the image with the command line of llm-d's router, which the
 Gateway API Inference Extension's reference picker shares:
@@ -243,17 +246,19 @@ Gateway API Inference Extension's reference picker shares:
 ```text
 --pool-name=<replica>-pool --pool-namespace=<namespace>
 --pool-group=inference.networking.k8s.io --config-file=/config/epp-config.yaml
---grpc-port=9002 --metrics-port=9090 --metrics-endpoint-auth=false
+--grpc-port=9002 --grpc-health-port=9003 --metrics-port=9090
+--metrics-endpoint-auth=false
 ```
 
-The picker serves gRPC on 9002. The InferencePool selects the replica's serving
+The picker serves gRPC on 9002, and its readiness probe calls the gRPC health
+service on 9003. The InferencePool selects the replica's serving
 pods by `modelplane.ai/serving`, and sends to port 8000. Under `PrefillDecode`,
 Modelplane labels each engine's pods `llm-d.ai/role: prefill` or `llm-d.ai/role:
-decode`, which llm-d's `prefill-filter` and `decode-filter` select on. In either
-mode it labels each serving pod `app` and `llm-d.ai/inference-serving`,
-replacing any `app` label the template sets. If the picker rejects its
-configuration, a new replica isn't Ready. A running replica keeps its old
-picker, which serves the old configuration, and stays Ready. Envoy AI
+decode`, which llm-d's `prefill-filter` and `decode-filter` select on. If the
+picker rejects its configuration, a new replica isn't Ready. A running replica
+keeps its old picker, which serves the old configuration, until the new
+picker's rollout passes its progress deadline. Then the replica isn't Ready
+either. Envoy AI
 Gateway fails closed without a picker, whatever the InferencePool's failure
 mode. A picker outage stops requests rather than sending them to prefill pods.
 
@@ -263,11 +268,14 @@ This design adopts #108, in either serving mode. A member's template can list
 containers beside `engine`:
 
 - Exactly one container is named `engine`, and container names are unique.
-- A container beside `engine` takes the same fields as `engine`: `image`,
-  `command`, `args`, `env`, and `ports`.
+- Every container takes `image`, `command`, `args`, `env`, `ports`, and
+  `resources`. A container beside `engine` can also set a `readinessProbe`,
+  such as the sidecar's `/health` on 8000.
 - Modelplane doesn't change any container except `engine`. It adds device
   claims, `MODELPLANE_` environment, ModelCache mounts, `/dev/shm`, and the
-  readiness probe. The pod's readiness follows the engine.
+  readiness probe.
+- Under `PrefillDecode`, Modelplane warns when the decode pod has no container
+  beside the engine. It can't tell whether a container is the sidecar.
 - Each member has its own template. The user chooses which pods of a gang get a
   container.
 
@@ -410,6 +418,10 @@ spec:
                 - --vllm-port=8001
                 ports:
                 - containerPort: 8000
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: 8000
               - name: engine
                 image: lmsysorg/sglang:v0.5.12.post1-cu129
                 command: ["python3", "-m", "sglang.launch_server"]
@@ -453,16 +465,10 @@ users. A `PrefillDecode` deployment names its router on any stack.
 
 ### More container fields
 
-A namespace whose LimitRange or quota requires resource limits needs
-`resources` on every container. Containers beside the engine can't set them
-yet. The API can add `resources` to all containers at once. Containers can't
-mount volumes either. The sidecar runs with `--secure-proxy=false`, because
-`--cert-path` has nothing to point at.
-
-Modelplane probes only the engine, so a decode pod is Ready once its
-engine is, whether or not the sidecar listens. The sidecar starts in about a
-second and the engine in minutes, so this rarely matters. A `readinessProbe` on
-every container would close it.
+Containers can't mount volumes. The sidecar runs with `--secure-proxy=false`,
+because `--cert-path` has nothing to point at. The API
+can add `volumeMounts` to all containers at once, and `securityContext` with
+it.
 
 ### Shared picker configurations
 

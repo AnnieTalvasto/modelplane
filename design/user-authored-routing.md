@@ -25,9 +25,9 @@ I propose the user writes the router for prefill/decode serving:
 serving:
   mode: PrefillDecode
   router: EndpointPicker      # required under PrefillDecode
-  endpointPicker:
+  endpointPicker:             # required with router
     image: ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0
-    config: { ... }           # required under PrefillDecode
+    config: { ... }
 ```
 
 ## Background
@@ -59,8 +59,8 @@ can't decode alone.
 
 | Engine and KV connector | Sidecar `--kv-connector` | Decider can skip prefill |
 |---|---|---|
-| vLLM [`NixlConnector`](https://docs.vllm.ai/en/v0.31.0/features/nixl_connector_usage.html) | `nixlv2` | Yes |
-| vLLM [`MooncakeConnector`](https://docs.vllm.ai/en/v0.31.0/features/mooncake_connector_usage.html) | `mooncake` | Yes |
+| vLLM [`NixlConnector`](https://docs.vllm.ai/en/v0.23.0/features/nixl_connector_usage.html) | `nixlv2` | Yes |
+| vLLM [`MooncakeConnector`](https://docs.vllm.ai/en/v0.23.0/features/mooncake_connector_usage.html) | `mooncake` | Yes |
 | [SGLang](https://docs.sglang.io/docs/advanced_features/pd_disaggregation), any transfer backend | `sglang` | No. Decode [rejects the request](https://github.com/sgl-project/sglang/blob/v0.5.21/python/sglang/srt/managers/scheduler.py#L2836-L2851) with HTTP 400. |
 
 ### What Modelplane composes today
@@ -70,7 +70,7 @@ Modelplane configures the router for vLLM with NIXL:
 - It injects the sidecar with `--kv-connector=nixlv2`.
 - It configures a decider that skips prefill for short or cached prompts.
 - It injects `VLLM_NIXL_SIDE_CHANNEL_HOST` and `VLLM_NIXL_SIDE_CHANNEL_PORT`
-  into every engine pod.
+  into each `PrefillDecode` engine's serving pods.
 - It reads `--port` from the decode engine's args, to find the engine behind the
   sidecar.
 - It reads `--block-size` or `--page-size` from the engine's args, to configure
@@ -199,8 +199,8 @@ Modelplane composes the rest:
 - The InferencePool and the HTTPRoute.
 - The picker's Deployment, Service, and RBAC, and the flags that connect the
   picker to the InferencePool.
-- The `llm-d.ai/role` label on each `PrefillDecode` engine's pods, from its
-  `phase`.
+- The `llm-d.ai/role` label on each `PrefillDecode` engine's serving pods,
+  from its `phase`. It's the only label Modelplane adds for the picker.
 - A memory-backed `/dev/shm` on each engine container.
 
 The Kimi-K2 recipe changes to this form. This is a breaking change to
@@ -210,12 +210,19 @@ running pods and router in place until the `ModelDeployment` sets `router` and
 `endpointPicker`. The deployment must add the sidecar too, though Modelplane
 can't check for it.
 
+The upgrade also rolls every replica's picker, in either mode. The picker gains
+`--grpc-health-port` and a readiness probe. The default `Unified` configuration
+raises a `blockSizeTokens` below 64 to 64, which the picker already does at
+request time. `PrefillDecode` serving pods lose the `app` and
+`llm-d.ai/inference-serving` labels, which llm-d's picker doesn't read.
+
 ### Unified serving
 
 A `Unified` deployment that doesn't set `router` gets llm-d's picker with
 Modelplane's default configuration. The configuration reads the block size from
-`--block-size` or `--page-size`, and uses at least 64, the smallest llm-d's
-picker accepts. A `Unified` deployment can set `router: EndpointPicker` with
+`--block-size` or `--page-size`, and uses at least 64. llm-d's picker raises a
+smaller value to 64 at request time. The rendered configuration matches what
+the picker runs. A `Unified` deployment can set `router: EndpointPicker` with
 its own image and configuration to tune the picker.
 
 ### Placement
@@ -232,7 +239,8 @@ reports `ReplicasScheduled=False` when none qualify.
 `serving.endpointPicker` is set exactly when `router: EndpointPicker` is:
 
 - `image` is the picker image, and `config` is its configuration. Modelplane
-  passes the configuration to the picker and doesn't validate it.
+  doesn't validate the configuration. It renders it as JSON, with whole numbers
+  as integers, and rejects an empty one.
 - Both are required. The configuration format changes between router releases,
   so a configuration states the picker it's for. A pinned picker runs only its
   own configuration.
@@ -253,8 +261,8 @@ Gateway API Inference Extension's reference picker shares:
 The picker serves gRPC on 9002, and its readiness probe calls the gRPC health
 service on 9003. The InferencePool selects the replica's serving
 pods by `modelplane.ai/serving`, and sends to port 8000. Under `PrefillDecode`,
-Modelplane labels each engine's pods `llm-d.ai/role: prefill` or `llm-d.ai/role:
-decode`, which llm-d's `prefill-filter` and `decode-filter` select on. If the
+Modelplane labels each engine's serving pods `llm-d.ai/role: prefill` or
+`llm-d.ai/role: decode`, which llm-d's `prefill-filter` and `decode-filter` select on. If the
 picker rejects its configuration, a new replica isn't Ready. A running replica
 keeps its old picker, which serves the old configuration, until the new
 picker's rollout passes its progress deadline. Then the replica isn't Ready
@@ -272,8 +280,10 @@ containers beside `engine`:
   `resources`. A container beside `engine` can also set a `readinessProbe`,
   such as the sidecar's `/health` on 8000.
 - Modelplane doesn't change any container except `engine`. It adds device
-  claims, `MODELPLANE_` environment, ModelCache mounts, `/dev/shm`, and the
-  readiness probe.
+  claims beside the engine's `resources`, `MODELPLANE_` environment, ModelCache
+  mounts, `/dev/shm`, the `http` port, and the readiness probe. The engine
+  can't set its own `readinessProbe`.
+- A `readinessProbe` sets exactly one of `httpGet`, `tcpSocket`, and `grpc`.
 - Under `PrefillDecode`, Modelplane warns when the decode pod has no container
   beside the engine. It can't tell whether a container is the sidecar.
 - Each member has its own template. The user chooses which pods of a gang get a
@@ -283,7 +293,10 @@ containers beside `engine`:
 
 A serving pod receives requests on port 8000, as today. The engine's port named
 `http` is where Modelplane probes the engine and the collector scrapes its
-metrics. It defaults to 8000, so an engine alone in its pod declares nothing.
+metrics. The collector reads only that port on the `engine` container, so a
+sidecar port named `http` isn't scraped. The `http` port defaults to 8000, so an
+engine alone in its pod declares nothing, and an unnamed 8000 on the engine is
+its `http` port.
 
 When a container is in front of the engine, such as the sidecar:
 
@@ -294,10 +307,18 @@ When a container is in front of the engine, such as the sidecar:
   without asking the engine.
 
 A container that doesn't serve, such as a log shipper, doesn't declare a port,
-and the engine doesn't either. CEL allows at most one container to declare 8000,
-and requires one when the engine's `http` port is elsewhere. Only serving pods
-(a `Standalone` pod, or a gang's leader) get the probe, so a `Worker` member
-doesn't need a container on 8000.
+and the engine doesn't either. In a serving pod, a `Standalone` pod or a gang's
+leader, CEL checks that:
+
+- At most one container declares 8000.
+- When a container beside the engine declares 8000, the engine declares its
+  `http` port elsewhere, and when the engine's `http` port is elsewhere, a
+  container beside it declares 8000.
+- The engine names port 8000 only `http`.
+
+These rules skip a `Worker` pod, which doesn't receive requests. Its ports pass
+through as written. In every container, port names are unique. A pod holds
+at most 8 containers, and a container declares at most 8 ports.
 
 ### Example
 

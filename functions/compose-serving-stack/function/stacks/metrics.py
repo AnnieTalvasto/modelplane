@@ -28,10 +28,13 @@ wrong rather than approximate.
 
 Matching has to hold across the fleet, not just between two engines, because
 a query sums buckets by boundary and a series with different boundaries
-corrupts the sum for everyone (#523). So each modelplane_* histogram has
+corrupts the sum for everyone. So each modelplane_* histogram has
 exactly one source. The engines' token histograms can't meet that even alone:
 vLLM sizes their buckets from --max-model-len, so two vLLM deployments
 disagree. They leave as counters instead, a sum and a count having no buckets.
+
+docs/utils/validate/validate_manifests.py holds every recipe's engine to the
+versions and flags these mappings need, so a change to one changes both.
 """
 
 from models.ai.modelplane.metricmapping import v1alpha1
@@ -55,7 +58,9 @@ _GATEWAY_PROXY = {
     "envoy_cluster_upstream_rq_active": "modelplane_frontend_requests_active",
 }
 
-# The engines, which explain what the gateway measured.
+# The engines, which explain what the gateway measured. vLLM publishes these
+# names from v0.9.2. Before it, vllm:gpu_cache_usage_perc stood for the KV cache,
+# and there were no prefix cache counters.
 _VLLM = {
     "vllm:time_to_first_token_seconds": "modelplane_request_ttft_seconds",
     "vllm:e2e_request_latency_seconds": "modelplane_request_duration_seconds",

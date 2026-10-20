@@ -384,6 +384,9 @@ def _config(
                             'set(metric.name, "modelplane_kv_cache_utilization_ratio") where metric.name == "sglang:token_usage"',
                             'set(metric.name, "modelplane_request_input_tokens") where metric.name == "sglang:prompt_tokens_histogram"',
                             'set(metric.name, "modelplane_request_output_tokens") where metric.name == "sglang:generation_tokens_histogram"',
+                            'set(metric.name, "modelplane_requests_preempted_total") where metric.name == "sglang:num_retracted_requests_total"',
+                            'set(metric.name, "modelplane_prefix_cache_hits_total") where metric.name == "sglang:cached_tokens_total"',
+                            'set(metric.name, "modelplane_prefix_cache_lookups_total") where metric.name == "sglang:prompt_tokens_total"',
                             'set(metric.name, "modelplane_route_decision_seconds") where metric.name == "llm_d_epp_scheduler_e2e_duration_seconds"',
                             'set(metric.name, "modelplane_gpu_memory_used_bytes") where metric.name == "DCGM_FI_DEV_FB_USED"',
                             'set(metric.name, "modelplane_gpu_compute_active_ratio") where metric.name == "DCGM_FI_PROF_GR_ENGINE_ACTIVE"',
@@ -723,6 +726,9 @@ STATEMENTS_CASES = [
                 'set(metric.name, "modelplane_kv_cache_utilization_ratio") where metric.name == "sglang:token_usage"',
                 'set(metric.name, "modelplane_request_input_tokens") where metric.name == "sglang:prompt_tokens_histogram"',
                 'set(metric.name, "modelplane_request_output_tokens") where metric.name == "sglang:generation_tokens_histogram"',
+                'set(metric.name, "modelplane_requests_preempted_total") where metric.name == "sglang:num_retracted_requests_total"',
+                'set(metric.name, "modelplane_prefix_cache_hits_total") where metric.name == "sglang:cached_tokens_total"',
+                'set(metric.name, "modelplane_prefix_cache_lookups_total") where metric.name == "sglang:prompt_tokens_total"',
                 'set(metric.name, "modelplane_route_decision_seconds") where metric.name == "llm_d_epp_scheduler_e2e_duration_seconds"',
                 'set(metric.name, "modelplane_gpu_memory_used_bytes") where metric.name == "DCGM_FI_DEV_FB_USED"',
                 'set(metric.name, "modelplane_gpu_compute_active_ratio") where metric.name == "DCGM_FI_PROF_GR_ENGINE_ACTIVE"',
@@ -931,7 +937,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="ad2c3f990baaeb4c",
+                    config_hash="55bc4445ed790fa2",
                     volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                     volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                     env_from=None,
@@ -976,7 +982,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="9f072b028dc68ea5",
+                    config_hash="5b3619d55150aa79",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -1043,7 +1049,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="176c01ff260e4716",
+                    config_hash="5097b903785819b1",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-vendor", "secret": {"secretName": "vendor-token"}},
@@ -1195,26 +1201,23 @@ def test_metric_name_pattern() -> None:
 
 
 def test_sglang_mappings() -> None:
-    """The SGLang built-in renames nothing onto queue time or preemption."""
-    # SGLang publishes neither. Checked against a running SGLang v0.4.9.post2:
-    # it has no per-request queue-time metric and no retraction counters at
-    # all. The nearest thing, sglang:avg_request_queue_latency, is a gauge of
-    # the mean over the last batch - a different measurement from vLLM's
-    # per-request histogram, and one name holding both makes a fleet quantile
-    # meaningless. The built-in mappings are read from the stacks package,
-    # because they're what this checks.
+    """The SGLang built-in renames its counters onto vLLM's names, but not its queue time."""
+    # Checked against SGLang v0.5.10.post1 and v0.5.12.post1, the versions the
+    # repo pins. Counters have no buckets, so they share vLLM's names.
+    # sglang:queue_time_seconds is a histogram whose buckets match neither
+    # vLLM's nor each other's across those versions, so a quantile over one
+    # name holding them would be wrong (#523). The built-in mappings are read
+    # from the stacks package, because they're what this checks.
     sglang = {
         m.from_: m.to
         for mapping in stacks.BUILTIN_MAPPINGS
         for m in mapping.spec.metrics
         if m.from_.startswith("sglang:")
     }
-    assert sglang, "the SGLang built-in went missing"
-    unpublished = {
-        source: target
-        for source, target in sglang.items()
-        if target in {"modelplane_request_queue_seconds", "modelplane_requests_preempted_total"}
-        or "retracted" in source
-        or "queue_time" in source
+    counters = {
+        "sglang:num_retracted_requests_total": "modelplane_requests_preempted_total",
+        "sglang:cached_tokens_total": "modelplane_prefix_cache_hits_total",
+        "sglang:prompt_tokens_total": "modelplane_prefix_cache_lookups_total",
     }
-    assert unpublished == {}, "SGLang publishes no queue time or preemption to rename"
+    assert {s: sglang.get(s) for s in counters} == counters, "SGLang's counters map onto vLLM's names"
+    assert "sglang:queue_time_seconds" not in sglang, "SGLang's queue time keeps its own buckets"

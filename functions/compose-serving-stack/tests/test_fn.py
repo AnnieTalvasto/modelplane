@@ -1573,6 +1573,9 @@ def _collector_config(
                             'set(metric.name, "modelplane_kv_cache_utilization_ratio") where metric.name == "sglang:token_usage"',
                             'set(metric.name, "modelplane_request_input_tokens") where metric.name == "sglang:prompt_tokens_histogram"',
                             'set(metric.name, "modelplane_request_output_tokens") where metric.name == "sglang:generation_tokens_histogram"',
+                            'set(metric.name, "modelplane_requests_preempted_total") where metric.name == "sglang:num_retracted_requests_total"',
+                            'set(metric.name, "modelplane_prefix_cache_hits_total") where metric.name == "sglang:cached_tokens_total"',
+                            'set(metric.name, "modelplane_prefix_cache_lookups_total") where metric.name == "sglang:prompt_tokens_total"',
                             'set(metric.name, "modelplane_route_decision_seconds") where metric.name == "llm_d_epp_scheduler_e2e_duration_seconds"',
                             'set(metric.name, "modelplane_gpu_memory_used_bytes") where metric.name == "DCGM_FI_DEV_FB_USED"',
                             'set(metric.name, "modelplane_gpu_compute_active_ratio") where metric.name == "DCGM_FI_PROF_GR_ENGINE_ACTIVE"',
@@ -4418,7 +4421,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="80bb34e74b135d14",
+                        config_hash="0cf483d8c47017af",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -4775,7 +4778,7 @@ COMPOSE_CASES = [
                         ready=fnv1.READY_TRUE,
                     ),
                     "collector": _collector(
-                        config_hash="173c93b5f6048d87",
+                        config_hash="47b8fbf904b68d9c",
                         volumes=[
                             {"name": "config", "configMap": {"name": "modelplane-collector"}},
                             {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -5100,7 +5103,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="5676f43101e4b6b1",
+                        config_hash="6b40121d65a36ddc",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -5401,7 +5404,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="460bb87917962297",
+                        config_hash="517d32fcc11ffd0d",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -5730,7 +5733,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="80bb34e74b135d14",
+                        config_hash="0cf483d8c47017af",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,

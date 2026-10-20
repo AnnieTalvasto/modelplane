@@ -82,6 +82,13 @@ An existing cluster must meet what Modelplane would otherwise set up for you:
 - **Any multi-node fabric you need.** For multi-node serving you provide and
   configure the RDMA or InfiniBand fabric and its drivers. Modelplane installs
   those only on the clouds it provisions.
+- **A DCGM exporter, if you want GPU metrics.** Modelplane doesn't install
+  one here because your cluster may already run one - a GPU Operator install
+  does by default - and a second exporter would collect every GPU twice.
+  Without one, engine and gateway series arrive and every `modelplane_gpu_*`
+  series is empty. [GPUs]({{< ref "/platform/telemetry.md#gpus" >}})
+  describes how the collector discovers the exporter, the DCGM fields it
+  needs, and how to check what yours publishes.
 
 ## Serving stack
 

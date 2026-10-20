@@ -17,7 +17,10 @@
 No generator covers Civo, so Modelplane pins the cloud half by hand,
 in the same shape a generator emits. Where a component also appears on
 a generated cloud, this file states the same pin, so one review moves
-both halves.
+both halves. The DCGM exporter's metrics CSV goes one step further:
+rather than restating it, this file imports it from the shared
+generated/aicr/dcgm.py, which the generator writes only after proving
+every generated cloud carries the same CSV.
 
 Civo pre-installs no GPU stack: its GPU node images ship the NVIDIA
 container toolkit but no driver, and there is no managed GPU Operator
@@ -37,6 +40,7 @@ path.
 import copy
 from dataclasses import replace
 
+from function.stacks.clouds.generated.aicr.dcgm import DCGM_METRICS_CSV
 from function.stacks.components import Chart, Component, Manifests
 
 # The pool label compose-civo-cluster writes on every node pool's nodes.
@@ -267,8 +271,11 @@ COMPONENTS: list[Component] = [
         version="v26.3.3",
         wait=True,
         # No kube-prometheus-stack edge, unlike the generated clouds': the
-        # DCGM exporter (whose ServiceMonitor needs the Prometheus CRDs)
-        # is disabled below.
+        # DCGM exporter's ServiceMonitor, the one piece that would need
+        # the Prometheus CRDs, stays off below. The exporter itself must
+        # run: without it every modelplane_gpu_* series and
+        # modelplane_energy_joules_total is empty on Civo - the
+        # collector's modelplane-gpu job would find no pod to scrape.
         depends_on=["node-feature-discovery", "cert-manager"],
         values={
             "ccManager": {"enabled": False},
@@ -276,8 +283,18 @@ COMPONENTS: list[Component] = [
             # The operator's DaemonSets must run on the GPU nodes, which
             # carry the nvidia.com/gpu taint from compose-civo-cluster.
             "daemonsets": {"tolerations": [{"key": "nvidia.com/gpu", "operator": "Exists", "effect": "NoSchedule"}]},
-            "dcgm": {"enabled": False},
-            "dcgmExporter": {"enabled": False},
+            # The CSV is the generator's, imported from the shared
+            # generated/aicr/dcgm.py. The ServiceMonitor stays off, unlike
+            # the generated clouds': the collector scrapes the exporter
+            # pods directly and Civo's Prometheus selects only
+            # PodMonitors, so nothing would read it - and off explicitly,
+            # so a chart default flip can't render one whose CRD this
+            # cluster doesn't carry.
+            "dcgm": {"enabled": True},
+            "dcgmExporter": {
+                "config": {"create": True, "data": DCGM_METRICS_CSV, "name": "dcgm-exporter"},
+                "serviceMonitor": {"enabled": False},
+            },
             # The DRA driver is the sole GPU allocator: the device
             # plugin's nvidia.com/gpu ledger would book the same physical
             # devices the DRA ResourceSlices allocate.

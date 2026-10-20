@@ -204,6 +204,10 @@ def _config(
                                     "source_labels": ["__meta_kubernetes_pod_label_modelplane_ai_role"],
                                     "target_label": "role",
                                 },
+                                {
+                                    "source_labels": ["__meta_kubernetes_pod_label_modelplane_ai_phase"],
+                                    "target_label": "phase",
+                                },
                                 {"source_labels": ["__meta_kubernetes_namespace"], "target_label": "namespace"},
                             ],
                         },
@@ -400,7 +404,7 @@ def _config(
                     {
                         "context": "resource",
                         "statements": [
-                            'keep_keys(resource.attributes, ["cluster", "deployment", "engine", "namespace", "node", "replica", "role", "service.instance.id", "service.name"])'
+                            'keep_keys(resource.attributes, ["cluster", "deployment", "engine", "namespace", "node", "phase", "replica", "role", "service.instance.id", "service.name"])'
                         ],
                     }
                 ]
@@ -498,6 +502,7 @@ def _config(
                     "replica",
                     "engine",
                     "role",
+                    "phase",
                     "node",
                     "service.name",
                     "service.instance.id",
@@ -1147,7 +1152,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="5cb68f27cc6fdb07",
+                    config_hash="3bcbc018f7e0465a",
                     volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                     volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                     env_from=None,
@@ -1192,7 +1197,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="4cb8523d7003a31d",
+                    config_hash="87ac4ede77087bc4",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -1259,7 +1264,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="c9533184548032c8",
+                    config_hash="76132615740d3905",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-vendor", "secret": {"secretName": "vendor-token"}},

@@ -1592,12 +1592,34 @@ def _collector_config(
             },
             "transform/modelplane": {
                 "metric_statements": [
+                    # The engines' token histograms as counters, extracted ahead of the
+                    # statements that select on the names extraction gives them.
+                    {
+                        "context": "metric",
+                        "statements": [
+                            'extract_sum_metric(true) where metric.name == "vllm:request_prompt_tokens"',
+                            'extract_sum_metric(true) where metric.name == "vllm:request_generation_tokens"',
+                            'extract_count_metric(true) where metric.name == "vllm:request_prompt_tokens"',
+                            'extract_sum_metric(true) where metric.name == "sglang:prompt_tokens_histogram"',
+                            'extract_sum_metric(true) where metric.name == "sglang:generation_tokens_histogram"',
+                            'extract_count_metric(true) where metric.name == "sglang:prompt_tokens_histogram"',
+                        ],
+                    },
                     {
                         "context": "metric",
                         "error_mode": "ignore",
                         "statements": [
                             'scale_metric(1048576.0) where metric.name == "DCGM_FI_DEV_FB_USED"',
                             'scale_metric(0.001) where metric.name == "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION"',
+                        ],
+                    },
+                    {
+                        "context": "datapoint",
+                        "statements": [
+                            'set(datapoint.attributes["direction"], "input") where metric.name == "vllm:request_prompt_tokens_sum"',
+                            'set(datapoint.attributes["direction"], "output") where metric.name == "vllm:request_generation_tokens_sum"',
+                            'set(datapoint.attributes["direction"], "input") where metric.name == "sglang:prompt_tokens_histogram_sum"',
+                            'set(datapoint.attributes["direction"], "output") where metric.name == "sglang:generation_tokens_histogram_sum"',
                         ],
                     },
                     {
@@ -1612,22 +1634,24 @@ def _collector_config(
                             'set(metric.name, "modelplane_request_queue_seconds") where metric.name == "vllm:request_queue_time_seconds"',
                             'set(metric.name, "modelplane_request_prefill_seconds") where metric.name == "vllm:request_prefill_time_seconds"',
                             'set(metric.name, "modelplane_request_decode_seconds") where metric.name == "vllm:request_decode_time_seconds"',
-                            'set(metric.name, "modelplane_request_input_tokens") where metric.name == "vllm:request_prompt_tokens"',
-                            'set(metric.name, "modelplane_request_output_tokens") where metric.name == "vllm:request_generation_tokens"',
                             'set(metric.name, "modelplane_requests_running") where metric.name == "vllm:num_requests_running"',
                             'set(metric.name, "modelplane_requests_waiting") where metric.name == "vllm:num_requests_waiting"',
                             'set(metric.name, "modelplane_kv_cache_utilization_ratio") where metric.name == "vllm:kv_cache_usage_perc"',
                             'set(metric.name, "modelplane_requests_preempted_total") where metric.name == "vllm:num_preemptions_total"',
                             'set(metric.name, "modelplane_prefix_cache_hits_total") where metric.name == "vllm:prefix_cache_hits_total"',
                             'set(metric.name, "modelplane_prefix_cache_lookups_total") where metric.name == "vllm:prefix_cache_queries_total"',
+                            'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "vllm:request_prompt_tokens_sum"',
+                            'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "vllm:request_generation_tokens_sum"',
+                            'set(metric.name, "modelplane_engine_requests_total") where metric.name == "vllm:request_prompt_tokens_count"',
                             'set(metric.name, "modelplane_requests_running") where metric.name == "sglang:num_running_reqs"',
                             'set(metric.name, "modelplane_requests_waiting") where metric.name == "sglang:num_queue_reqs"',
                             'set(metric.name, "modelplane_kv_cache_utilization_ratio") where metric.name == "sglang:token_usage"',
-                            'set(metric.name, "modelplane_request_input_tokens") where metric.name == "sglang:prompt_tokens_histogram"',
-                            'set(metric.name, "modelplane_request_output_tokens") where metric.name == "sglang:generation_tokens_histogram"',
                             'set(metric.name, "modelplane_requests_preempted_total") where metric.name == "sglang:num_retracted_requests_total"',
                             'set(metric.name, "modelplane_prefix_cache_hits_total") where metric.name == "sglang:cached_tokens_total"',
                             'set(metric.name, "modelplane_prefix_cache_lookups_total") where metric.name == "sglang:prompt_tokens_total"',
+                            'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "sglang:prompt_tokens_histogram_sum"',
+                            'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "sglang:generation_tokens_histogram_sum"',
+                            'set(metric.name, "modelplane_engine_requests_total") where metric.name == "sglang:prompt_tokens_histogram_count"',
                             'set(metric.name, "modelplane_route_decision_seconds") where metric.name == "llm_d_epp_scheduler_e2e_duration_seconds"',
                             'set(metric.name, "modelplane_gpu_memory_used_bytes") where metric.name == "DCGM_FI_DEV_FB_USED"',
                             'set(metric.name, "modelplane_gpu_compute_active_ratio") where metric.name == "DCGM_FI_PROF_GR_ENGINE_ACTIVE"',
@@ -4473,7 +4497,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="58bb70e64148b7c8",
+                        config_hash="3e2c42e4babd1466",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -4830,7 +4854,7 @@ COMPOSE_CASES = [
                         ready=fnv1.READY_TRUE,
                     ),
                     "collector": _collector(
-                        config_hash="4ccdcd34a7fda6e7",
+                        config_hash="07649765a3427b52",
                         volumes=[
                             {"name": "config", "configMap": {"name": "modelplane-collector"}},
                             {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -5155,7 +5179,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="2ce34a9b7d28f20d",
+                        config_hash="c02156b69d96b94e",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -5456,7 +5480,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="bf48d1b60cb5f781",
+                        config_hash="89ca535d0265f2b7",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -5785,7 +5809,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="58bb70e64148b7c8",
+                        config_hash="3e2c42e4babd1466",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,

@@ -275,8 +275,13 @@ spec:
                   --collect-tokens-histogram
 ```
 
-SGLang doesn't publish request queue time or preemption counters, so only vLLM
-populates `modelplane_request_queue_seconds` and `modelplane_requests_preempted_total`.
+SGLang's prefix cache and retraction counters populate
+`modelplane_prefix_cache_hits_total`, `modelplane_prefix_cache_lookups_total` and
+`modelplane_requests_preempted_total`, so a prefix cache hit rate compares across both
+engines. SGLang counts a request when it finishes, where vLLM counts it when it's
+scheduled, so an aborted request is missing from SGLang's counts. SGLang's queue time
+histogram uses different buckets from vLLM's, so only vLLM populates
+`modelplane_request_queue_seconds`.
 
 Because the gateway, not the engine, measures the `modelplane_frontend_*` series, they
 work without configuration for an engine Modelplane has never seen.

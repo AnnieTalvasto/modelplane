@@ -57,12 +57,13 @@ _VLLM = {
     "vllm:prefix_cache_queries_total": "modelplane_prefix_cache_lookups_total",
 }
 
-# SGLang publishes none of the queue-latency or preemption measurements vLLM
-# does, so there is nothing here to rename onto those names.
-# sglang:avg_request_queue_latency is the nearest thing to a queue time and is
-# not the same measurement - a gauge holding the mean over the last batch,
-# where modelplane_request_queue_seconds is a per-request histogram - and one
-# name holding both would make a quantile over the fleet meaningless.
+# SGLang's prefix-cache and retraction counters count what vLLM's do, in the
+# same units: prefix-cache hits and lookups in prompt tokens, so hits over
+# lookups is a hit rate for either engine. SGLang counts when a request
+# finishes where vLLM counts when it's scheduled, and labels its hits with a
+# cache_source (device, host, storage). sglang:queue_time_seconds is a
+# per-request histogram like vLLM's queue time, but its buckets differ from
+# vLLM's and between SGLang versions, so it isn't renamed (#523).
 # The two token histograms need --collect-tokens-histogram as well as
 # --enable-metrics; the engine publishes only the _total counters without it.
 _SGLANG = {
@@ -71,6 +72,9 @@ _SGLANG = {
     "sglang:token_usage": "modelplane_kv_cache_utilization_ratio",
     "sglang:prompt_tokens_histogram": "modelplane_request_input_tokens",
     "sglang:generation_tokens_histogram": "modelplane_request_output_tokens",
+    "sglang:num_retracted_requests_total": "modelplane_requests_preempted_total",
+    "sglang:cached_tokens_total": "modelplane_prefix_cache_hits_total",
+    "sglang:prompt_tokens_total": "modelplane_prefix_cache_lookups_total",
 }
 
 # The endpoint picker. A router's queue is a different measurement from an

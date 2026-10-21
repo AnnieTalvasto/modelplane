@@ -68,7 +68,7 @@ _FLEET_GATEWAY = "inference-gateway"
 # The cluster Envoy builds for a ModelService: compose-model-route's
 # AIGatewayRoute, named for the service in the team's mirrored namespace, and
 # rule 0, the one rule compose_route gives it. The namespace is the one an
-# engine's series carry.
+# engine's series carry. A second rule there would go uncounted here.
 _MODEL_ROUTE = r"httproute/(mp-[^/]+)/([^/]+)/rule/0"
 
 # What a series is attributed to, and the only resource attributes that survive
@@ -192,6 +192,11 @@ def _in_flight_relabels() -> list[dict[str, Any]]:
     Prometheus relabeling rather than a transform statement, because it runs
     as the series are scraped, and the two drops are on labels a mapping can't
     select on. A regex here is anchored at both ends.
+
+    The rules run in order. The drop has to run before namespace and service
+    are set from the cluster name, and the cleanup last. Metric relabeling
+    doesn't remove labels starting with __ the way target relabeling does, so
+    __tmp_model is cleared like the others.
     """
     return [
         {
@@ -217,8 +222,11 @@ def _in_flight_relabels() -> list[dict[str, Any]]:
         # identity just set.
         *(
             {"source_labels": ["__name__"], "regex": _IN_FLIGHT, "target_label": label, "replacement": ""}
-            for label in ("envoy_cluster_name", "gateway", "__tmp_model")
+            for label in ("envoy_cluster_name", "__tmp_model")
         ),
+        # The gateway is a target label, so it's on every series from the job,
+        # and only the rules above read it.
+        {"target_label": "gateway", "replacement": ""},
     ]
 
 
@@ -362,6 +370,11 @@ def _scrape_configs() -> list[dict[str, Any]]:
                 *_annotated_port(),
                 {"source_labels": ["__meta_kubernetes_namespace"], "target_label": "namespace"},
             ],
+            # Another Envoy's count of requests in flight would otherwise leave
+            # under the gateway's name, with its own cluster names and none of
+            # the gateway job's drops. An Istio sidecar publishes Envoy's
+            # statistics, and annotates its pod for scraping.
+            "metric_relabel_configs": [{"source_labels": ["__name__"], "regex": _IN_FLIGHT, "action": "drop"}],
         },
     ]
 

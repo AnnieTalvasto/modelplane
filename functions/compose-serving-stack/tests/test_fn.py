@@ -1471,15 +1471,10 @@ def _collector_config(
                                 {
                                     "source_labels": ["__name__"],
                                     "regex": "envoy_cluster_upstream_rq_active",
-                                    "target_label": "gateway",
-                                    "replacement": "",
-                                },
-                                {
-                                    "source_labels": ["__name__"],
-                                    "regex": "envoy_cluster_upstream_rq_active",
                                     "target_label": "__tmp_model",
                                     "replacement": "",
                                 },
+                                {"target_label": "gateway", "replacement": ""},
                             ],
                         },
                         {
@@ -1569,6 +1564,13 @@ def _collector_config(
                                     "replacement": "$1:$2",
                                 },
                                 {"source_labels": ["__meta_kubernetes_namespace"], "target_label": "namespace"},
+                            ],
+                            "metric_relabel_configs": [
+                                {
+                                    "source_labels": ["__name__"],
+                                    "regex": "envoy_cluster_upstream_rq_active",
+                                    "action": "drop",
+                                },
                             ],
                         },
                     ]
@@ -4471,7 +4473,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="ccc800f7a40cd911",
+                        config_hash="58bb70e64148b7c8",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -4828,7 +4830,7 @@ COMPOSE_CASES = [
                         ready=fnv1.READY_TRUE,
                     ),
                     "collector": _collector(
-                        config_hash="852f8ccff02735fe",
+                        config_hash="4ccdcd34a7fda6e7",
                         volumes=[
                             {"name": "config", "configMap": {"name": "modelplane-collector"}},
                             {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -5153,7 +5155,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="2cb5409d88b7924a",
+                        config_hash="2ce34a9b7d28f20d",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -5454,7 +5456,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="177900f19ee86dff",
+                        config_hash="bf48d1b60cb5f781",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -5783,7 +5785,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="ccc800f7a40cd911",
+                        config_hash="58bb70e64148b7c8",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,

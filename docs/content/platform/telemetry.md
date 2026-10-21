@@ -34,7 +34,10 @@ carry the model instead: `gen_ai_original_model` is the model the caller sent,
 `<namespace>/<service>`, and `gen_ai_request_model` is the deployment the gateway
 sent the request to, `<namespace>/<deployment>`.
 `modelplane_frontend_requests_active` is counted per `ModelService` instead. It
-has a `service` label, and the same `namespace` label as an engine's series.
+has a `service` label, and the same `namespace` label as an engine's series:
+the team's namespace as it's mirrored on the inference cluster, such as
+`mp-ml-team-51733`. The namespace in `gen_ai_original_model` is the team's own,
+such as `ml-team`, so the two don't join on it.
 
 Each replica publishes its own series, so combine them in your query. Which
 combination is right follows from what the metric measures:
@@ -98,12 +101,16 @@ output nobody reads. To compare the two for a deployment `qwen3-8b` that a
 `ModelService` of the same name fronts, and that serves each request on one engine:
 
 ```promql
-sum by (namespace) (modelplane_requests_running{deployment="qwen3-8b"} + modelplane_requests_waiting{deployment="qwen3-8b"})
+sum by (namespace) (modelplane_requests_running{deployment="qwen3-8b"})
+  + sum by (namespace) (modelplane_requests_waiting{deployment="qwen3-8b"})
   - sum by (namespace) (modelplane_frontend_requests_active{service="qwen3-8b"})
 ```
 
-If the difference is well above 0 for minutes, the engine is doing work no caller
-is waiting for.
+Each series is summed on its own, so an engine missing one of them for a scrape,
+such as just after it restarts, doesn't drop out of the result. The gateway and
+the engines are scraped at different moments, so expect small differences that
+come and go. A difference above 5 for 5 minutes is a reasonable place to start an
+alert: the engine is doing work no caller is waiting for.
 
 ## Send telemetry to a destination
 

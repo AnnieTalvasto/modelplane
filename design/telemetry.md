@@ -78,7 +78,8 @@ token are not that: the names are close, the measurements differ, and renaming o
 other produces a number that is confidently wrong. Even where two engines agree on the
 measurement they can disagree on the histogram. vLLM resolves down to a millisecond and
 SGLang to a hundred of them, so a quantile taken across both is wrong rather than
-approximate.
+approximate. SGLang's time to first token has a name of its own,
+`modelplane_sglang_ttft_seconds`, for that reason.
 
 One component sidesteps most of this. Envoy AI Gateway proxies every request and measures it
 itself, reporting under the OpenTelemetry GenAI conventions: time to first token, time per
@@ -130,7 +131,12 @@ up.
 **The engine** explains what the gateway measured. vLLM and SGLang both publish queue depth,
 running and waiting counts, KV utilization and preemptions as gauges and counters, which
 aggregate cleanly. Their latency histograms come across too, under `modelplane_request_*`,
-though those stay per-engine diagnostics, since their buckets do not merge.
+though those stay per-engine diagnostics, since their buckets do not merge. Each such name
+takes one engine's histogram and no other, because a query sums buckets by boundary and one
+series with different boundaries corrupts the sum for every other. Their token
+histograms can't meet that even within one engine, since vLLM sizes their buckets from
+`--max-model-len`, so only their sums and counts come across, as
+`modelplane_engine_tokens_total` and `modelplane_engine_requests_total`.
 
 **The endpoint picker** publishes `llm_d_epp_*`, the source of
 `modelplane_route_decision_seconds`. That is the time the picker spent choosing a backend,
@@ -619,8 +625,8 @@ separate those from a slow model.
 | `modelplane_request_prefill_seconds` | histogram | engine, where reported |
 | `modelplane_request_decode_seconds` | histogram | engine, where reported |
 | `modelplane_request_kv_transfer_seconds` | histogram | engine, disaggregated only |
-| `modelplane_request_input_tokens` | histogram | engine |
-| `modelplane_request_output_tokens` | histogram | engine |
+| `modelplane_engine_tokens_total{direction}` | counter | engine |
+| `modelplane_engine_requests_total` | counter | engine |
 | `modelplane_requests_running` | gauge | engine |
 | `modelplane_requests_waiting` | gauge | engine |
 | `modelplane_kv_cache_utilization_ratio` | gauge (0 to 1) | engine, mean over replicas |
@@ -629,6 +635,9 @@ separate those from a slow model.
 | `modelplane_requests_preempted_total` | counter | engine |
 | `modelplane_tokens_recomputed_total` | counter | engine, where reported |
 | `modelplane_responses_total{reason}` | counter | engine |
+| `modelplane_engine_responses_total{status}` | counter | engine, SGLang only |
+| `modelplane_engine_requests_active` | gauge | engine, SGLang only |
+| `modelplane_sglang_ttft_seconds` | histogram | engine, SGLang only |
 | `modelplane_tool_call_parses_total{outcome}` | counter | engine, where reported |
 | `modelplane_route_decision_seconds` | histogram | picker |
 | `modelplane_route_requests_total{decision}` | counter | picker |
@@ -639,6 +648,7 @@ separate those from a slow model.
 | Metric | Type | Source |
 |---|---|---|
 | `modelplane_gpu_memory_used_bytes` | gauge | GPU exporter |
+| `modelplane_gpu_memory_free_bytes` | gauge | GPU exporter |
 | `modelplane_gpu_compute_active_ratio` | gauge (0 to 1) | GPU exporter |
 | `modelplane_gpu_tensor_active_ratio` | gauge (0 to 1) | GPU exporter |
 | `modelplane_gpu_memory_bandwidth_ratio` | gauge (0 to 1) | GPU exporter |
@@ -684,13 +694,16 @@ differs whenever a request fails over to a provider. A frontend series therefore
 `engine` goes only on
 series an engine produced, because it is read from the engine's own metric prefix and the
 gateway does not know what served a request. Under disaggregated serving an engine series
-carries a `role` of `prefill` or `decode`, because the two do different work and an average
-of them describes neither. GPU series carry `gpu_uuid` and the node, which is all DCGM
-knows.
+carries a `phase` of `Prefill` or `Decode`, because the two do different work and an average
+of them describes neither, and because both count every request they share. `role`
+is the member's role in its engine, `Standalone`, `Leader` or `Worker`. GPU series
+carry `gpu_uuid` and the node, which is all DCGM knows.
 
 Two labels have closed value sets: `status` on `modelplane_requests_total` is `ok`,
-`client_error` or `server_error`, and `direction` on `modelplane_tokens_total` is `input` or
-`output`.
+`client_error` or `server_error`, and `direction` on `modelplane_tokens_total` and
+`modelplane_engine_tokens_total` is `input` or `output`. `status` on
+`modelplane_engine_responses_total` uses the same three classes for the codes an
+OpenAI-compatible server returns, and a rarer code keeps its number.
 
 Cardinality is bounded by construction, and deliberately. Every label above is something
 Modelplane created, so the series count is the number of deployments times the clusters they
@@ -712,7 +725,8 @@ GPU-to-replica binding, and a backend joins DCGM's figures through it. Every cos
 efficiency question in this design is that join.
 
 `modelplane_responses_total{reason}` is the one that catches a truncation. `reason` is how
-generation ended, `stop` or `length` or `tool_calls`, and a response cut off at the token
+generation ended, as vLLM reports it: `stop`, `length`, `abort`, `error` or `repetition`. It
+also catches a client that left: its request should end as `abort`. A response cut off at the token
 cap reports `length` while still returning 200 with a well-formed body. Every layer above
 reads that as success. A timeout severing a stream produces the same shape from the other
 direction: a 200, valid output, and no terminal event. So the rate of `length` against the

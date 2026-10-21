@@ -72,6 +72,14 @@ deployment above:
 
 {{< manifests "recipes/qwen3-8b-speculative-decoding/model-service.yaml" >}}
 
+Modelplane's built-in metric mappings leave out speculative decoding's counters,
+because vLLM publishes them only while an engine drafts. This `MetricMapping` maps
+them, so drafts, drafted tokens and accepted tokens by draft position reach your
+metrics backend. Accepted tokens over drafts, by position, is what to read when
+choosing `num_speculative_tokens`:
+
+{{< manifests "recipes/qwen3-8b-speculative-decoding/metric-mapping.yaml" >}}
+
 Speculation is active when the engine logs its `SpeculativeConfig` at startup
 (`method='ngram'`). The call below pastes a code block and asks for a small edit,
 the copy-heavy case n-gram accelerates, so most output tokens are matched straight

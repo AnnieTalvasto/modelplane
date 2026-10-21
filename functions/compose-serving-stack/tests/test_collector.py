@@ -204,6 +204,10 @@ def _config(
                                     "source_labels": ["__meta_kubernetes_pod_label_modelplane_ai_role"],
                                     "target_label": "role",
                                 },
+                                {
+                                    "source_labels": ["__meta_kubernetes_pod_label_modelplane_ai_phase"],
+                                    "target_label": "phase",
+                                },
                                 {"source_labels": ["__meta_kubernetes_namespace"], "target_label": "namespace"},
                             ],
                         },
@@ -400,13 +404,26 @@ def _config(
                     {
                         "context": "resource",
                         "statements": [
-                            'keep_keys(resource.attributes, ["cluster", "deployment", "engine", "namespace", "node", "replica", "role", "service.instance.id", "service.name"])'
+                            'keep_keys(resource.attributes, ["cluster", "deployment", "engine", "namespace", "node", "phase", "replica", "role", "service.instance.id", "service.name"])'
                         ],
                     }
                 ]
             },
             "transform/modelplane": {
                 "metric_statements": [
+                    # The engines' token histograms as counters, extracted ahead of the
+                    # statements that select on the names extraction gives them.
+                    {
+                        "context": "metric",
+                        "statements": [
+                            'extract_sum_metric(true) where metric.name == "vllm:request_prompt_tokens"',
+                            'extract_sum_metric(true) where metric.name == "vllm:request_generation_tokens"',
+                            'extract_count_metric(true) where metric.name == "vllm:request_prompt_tokens"',
+                            'extract_sum_metric(true) where metric.name == "sglang:prompt_tokens_histogram"',
+                            'extract_sum_metric(true) where metric.name == "sglang:generation_tokens_histogram"',
+                            'extract_count_metric(true) where metric.name == "sglang:prompt_tokens_histogram"',
+                        ],
+                    },
                     # DCGM reports mJ and MiB, and the names say joules and bytes.
                     # scale_metric converts a histogram's sum, bounds and buckets
                     # where setting value_double would convert a gauge and leave a
@@ -420,7 +437,28 @@ def _config(
                         "error_mode": "ignore",
                         "statements": [
                             'scale_metric(1048576.0) where metric.name == "DCGM_FI_DEV_FB_USED"',
+                            'scale_metric(1048576.0) where metric.name == "DCGM_FI_DEV_FB_FREE"',
                             'scale_metric(0.001) where metric.name == "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION"',
+                        ],
+                    },
+                    {
+                        "context": "datapoint",
+                        "statements": [
+                            'set(datapoint.attributes["direction"], "input") where metric.name == "vllm:request_prompt_tokens_sum"',
+                            'set(datapoint.attributes["direction"], "output") where metric.name == "vllm:request_generation_tokens_sum"',
+                            'set(datapoint.attributes["reason"], datapoint.attributes["finished_reason"]) where metric.name == "vllm:request_success_total"',
+                            'delete_key(datapoint.attributes, "finished_reason") where metric.name == "vllm:request_success_total"',
+                            'set(datapoint.attributes["direction"], "input") where metric.name == "sglang:prompt_tokens_histogram_sum"',
+                            'set(datapoint.attributes["direction"], "output") where metric.name == "sglang:generation_tokens_histogram_sum"',
+                            'set(datapoint.attributes["status"], datapoint.attributes["status_code"]) where metric.name == "sglang:http_responses_total"',
+                            'set(datapoint.attributes["status"], "ok") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "200"',
+                            'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "400"',
+                            'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "404"',
+                            'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "422"',
+                            'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "429"',
+                            'set(datapoint.attributes["status"], "server_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "500"',
+                            'set(datapoint.attributes["status"], "server_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "503"',
+                            'delete_key(datapoint.attributes, "status_code") where metric.name == "sglang:http_responses_total"',
                         ],
                     },
                     {
@@ -435,24 +473,31 @@ def _config(
                             'set(metric.name, "modelplane_request_queue_seconds") where metric.name == "vllm:request_queue_time_seconds"',
                             'set(metric.name, "modelplane_request_prefill_seconds") where metric.name == "vllm:request_prefill_time_seconds"',
                             'set(metric.name, "modelplane_request_decode_seconds") where metric.name == "vllm:request_decode_time_seconds"',
-                            'set(metric.name, "modelplane_request_input_tokens") where metric.name == "vllm:request_prompt_tokens"',
-                            'set(metric.name, "modelplane_request_output_tokens") where metric.name == "vllm:request_generation_tokens"',
                             'set(metric.name, "modelplane_requests_running") where metric.name == "vllm:num_requests_running"',
                             'set(metric.name, "modelplane_requests_waiting") where metric.name == "vllm:num_requests_waiting"',
                             'set(metric.name, "modelplane_kv_cache_utilization_ratio") where metric.name == "vllm:kv_cache_usage_perc"',
                             'set(metric.name, "modelplane_requests_preempted_total") where metric.name == "vllm:num_preemptions_total"',
                             'set(metric.name, "modelplane_prefix_cache_hits_total") where metric.name == "vllm:prefix_cache_hits_total"',
                             'set(metric.name, "modelplane_prefix_cache_lookups_total") where metric.name == "vllm:prefix_cache_queries_total"',
+                            'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "vllm:request_prompt_tokens_sum"',
+                            'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "vllm:request_generation_tokens_sum"',
+                            'set(metric.name, "modelplane_engine_requests_total") where metric.name == "vllm:request_prompt_tokens_count"',
+                            'set(metric.name, "modelplane_responses_total") where metric.name == "vllm:request_success_total"',
                             'set(metric.name, "modelplane_requests_running") where metric.name == "sglang:num_running_reqs"',
                             'set(metric.name, "modelplane_requests_waiting") where metric.name == "sglang:num_queue_reqs"',
                             'set(metric.name, "modelplane_kv_cache_utilization_ratio") where metric.name == "sglang:token_usage"',
-                            'set(metric.name, "modelplane_request_input_tokens") where metric.name == "sglang:prompt_tokens_histogram"',
-                            'set(metric.name, "modelplane_request_output_tokens") where metric.name == "sglang:generation_tokens_histogram"',
                             'set(metric.name, "modelplane_requests_preempted_total") where metric.name == "sglang:num_retracted_requests_total"',
                             'set(metric.name, "modelplane_prefix_cache_hits_total") where metric.name == "sglang:cached_tokens_total"',
                             'set(metric.name, "modelplane_prefix_cache_lookups_total") where metric.name == "sglang:prompt_tokens_total"',
+                            'set(metric.name, "modelplane_sglang_ttft_seconds") where metric.name == "sglang:time_to_first_token_seconds"',
+                            'set(metric.name, "modelplane_engine_requests_active") where metric.name == "sglang:http_requests_active"',
+                            'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "sglang:prompt_tokens_histogram_sum"',
+                            'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "sglang:generation_tokens_histogram_sum"',
+                            'set(metric.name, "modelplane_engine_requests_total") where metric.name == "sglang:prompt_tokens_histogram_count"',
+                            'set(metric.name, "modelplane_engine_responses_total") where metric.name == "sglang:http_responses_total"',
                             'set(metric.name, "modelplane_route_decision_seconds") where metric.name == "llm_d_epp_scheduler_e2e_duration_seconds"',
                             'set(metric.name, "modelplane_gpu_memory_used_bytes") where metric.name == "DCGM_FI_DEV_FB_USED"',
+                            'set(metric.name, "modelplane_gpu_memory_free_bytes") where metric.name == "DCGM_FI_DEV_FB_FREE"',
                             'set(metric.name, "modelplane_gpu_compute_active_ratio") where metric.name == "DCGM_FI_PROF_GR_ENGINE_ACTIVE"',
                             'set(metric.name, "modelplane_gpu_tensor_active_ratio") where metric.name == "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE"',
                             'set(metric.name, "modelplane_gpu_memory_bandwidth_ratio") where metric.name == "DCGM_FI_PROF_DRAM_ACTIVE"',
@@ -474,6 +519,7 @@ def _config(
                     "replica",
                     "engine",
                     "role",
+                    "phase",
                     "node",
                     "service.name",
                     "service.instance.id",
@@ -866,12 +912,36 @@ STATEMENTS_CASES = [
         reason="The built-in mappings convert DCGM's units, then rename every series they map.",
         mappings=list(stacks.BUILTIN_MAPPINGS),
         want=(
-            [],
+            [
+                'extract_sum_metric(true) where metric.name == "vllm:request_prompt_tokens"',
+                'extract_sum_metric(true) where metric.name == "vllm:request_generation_tokens"',
+                'extract_count_metric(true) where metric.name == "vllm:request_prompt_tokens"',
+                'extract_sum_metric(true) where metric.name == "sglang:prompt_tokens_histogram"',
+                'extract_sum_metric(true) where metric.name == "sglang:generation_tokens_histogram"',
+                'extract_count_metric(true) where metric.name == "sglang:prompt_tokens_histogram"',
+            ],
             [
                 'scale_metric(1048576.0) where metric.name == "DCGM_FI_DEV_FB_USED"',
+                'scale_metric(1048576.0) where metric.name == "DCGM_FI_DEV_FB_FREE"',
                 'scale_metric(0.001) where metric.name == "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION"',
             ],
-            [],
+            [
+                'set(datapoint.attributes["direction"], "input") where metric.name == "vllm:request_prompt_tokens_sum"',
+                'set(datapoint.attributes["direction"], "output") where metric.name == "vllm:request_generation_tokens_sum"',
+                'set(datapoint.attributes["reason"], datapoint.attributes["finished_reason"]) where metric.name == "vllm:request_success_total"',
+                'delete_key(datapoint.attributes, "finished_reason") where metric.name == "vllm:request_success_total"',
+                'set(datapoint.attributes["direction"], "input") where metric.name == "sglang:prompt_tokens_histogram_sum"',
+                'set(datapoint.attributes["direction"], "output") where metric.name == "sglang:generation_tokens_histogram_sum"',
+                'set(datapoint.attributes["status"], datapoint.attributes["status_code"]) where metric.name == "sglang:http_responses_total"',
+                'set(datapoint.attributes["status"], "ok") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "200"',
+                'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "400"',
+                'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "404"',
+                'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "422"',
+                'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "429"',
+                'set(datapoint.attributes["status"], "server_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "500"',
+                'set(datapoint.attributes["status"], "server_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "503"',
+                'delete_key(datapoint.attributes, "status_code") where metric.name == "sglang:http_responses_total"',
+            ],
             [
                 'set(metric.name, "modelplane_frontend_request_duration_seconds") where metric.name == "gen_ai_server_request_duration_seconds"',
                 'set(metric.name, "modelplane_frontend_ttft_seconds") where metric.name == "gen_ai_server_time_to_first_token_seconds"',
@@ -882,27 +952,34 @@ STATEMENTS_CASES = [
                 'set(metric.name, "modelplane_request_queue_seconds") where metric.name == "vllm:request_queue_time_seconds"',
                 'set(metric.name, "modelplane_request_prefill_seconds") where metric.name == "vllm:request_prefill_time_seconds"',
                 'set(metric.name, "modelplane_request_decode_seconds") where metric.name == "vllm:request_decode_time_seconds"',
-                'set(metric.name, "modelplane_request_input_tokens") where metric.name == "vllm:request_prompt_tokens"',
-                'set(metric.name, "modelplane_request_output_tokens") where metric.name == "vllm:request_generation_tokens"',
                 'set(metric.name, "modelplane_requests_running") where metric.name == "vllm:num_requests_running"',
                 'set(metric.name, "modelplane_requests_waiting") where metric.name == "vllm:num_requests_waiting"',
                 'set(metric.name, "modelplane_kv_cache_utilization_ratio") where metric.name == "vllm:kv_cache_usage_perc"',
                 'set(metric.name, "modelplane_requests_preempted_total") where metric.name == "vllm:num_preemptions_total"',
                 'set(metric.name, "modelplane_prefix_cache_hits_total") where metric.name == "vllm:prefix_cache_hits_total"',
                 'set(metric.name, "modelplane_prefix_cache_lookups_total") where metric.name == "vllm:prefix_cache_queries_total"',
+                'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "vllm:request_prompt_tokens_sum"',
+                'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "vllm:request_generation_tokens_sum"',
+                'set(metric.name, "modelplane_engine_requests_total") where metric.name == "vllm:request_prompt_tokens_count"',
+                'set(metric.name, "modelplane_responses_total") where metric.name == "vllm:request_success_total"',
                 # Not SGLang's latency histograms, sglang:time_to_first_token_seconds
                 # and sglang:inter_token_latency: their buckets resolve to 100ms
                 # where vLLM's resolve to 1ms.
                 'set(metric.name, "modelplane_requests_running") where metric.name == "sglang:num_running_reqs"',
                 'set(metric.name, "modelplane_requests_waiting") where metric.name == "sglang:num_queue_reqs"',
                 'set(metric.name, "modelplane_kv_cache_utilization_ratio") where metric.name == "sglang:token_usage"',
-                'set(metric.name, "modelplane_request_input_tokens") where metric.name == "sglang:prompt_tokens_histogram"',
-                'set(metric.name, "modelplane_request_output_tokens") where metric.name == "sglang:generation_tokens_histogram"',
                 'set(metric.name, "modelplane_requests_preempted_total") where metric.name == "sglang:num_retracted_requests_total"',
                 'set(metric.name, "modelplane_prefix_cache_hits_total") where metric.name == "sglang:cached_tokens_total"',
                 'set(metric.name, "modelplane_prefix_cache_lookups_total") where metric.name == "sglang:prompt_tokens_total"',
+                'set(metric.name, "modelplane_sglang_ttft_seconds") where metric.name == "sglang:time_to_first_token_seconds"',
+                'set(metric.name, "modelplane_engine_requests_active") where metric.name == "sglang:http_requests_active"',
+                'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "sglang:prompt_tokens_histogram_sum"',
+                'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "sglang:generation_tokens_histogram_sum"',
+                'set(metric.name, "modelplane_engine_requests_total") where metric.name == "sglang:prompt_tokens_histogram_count"',
+                'set(metric.name, "modelplane_engine_responses_total") where metric.name == "sglang:http_responses_total"',
                 'set(metric.name, "modelplane_route_decision_seconds") where metric.name == "llm_d_epp_scheduler_e2e_duration_seconds"',
                 'set(metric.name, "modelplane_gpu_memory_used_bytes") where metric.name == "DCGM_FI_DEV_FB_USED"',
+                'set(metric.name, "modelplane_gpu_memory_free_bytes") where metric.name == "DCGM_FI_DEV_FB_FREE"',
                 'set(metric.name, "modelplane_gpu_compute_active_ratio") where metric.name == "DCGM_FI_PROF_GR_ENGINE_ACTIVE"',
                 'set(metric.name, "modelplane_gpu_tensor_active_ratio") where metric.name == "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE"',
                 'set(metric.name, "modelplane_gpu_memory_bandwidth_ratio") where metric.name == "DCGM_FI_PROF_DRAM_ACTIVE"',
@@ -1109,7 +1186,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="679472c1b4d636ce",
+                    config_hash="dd2c199a82264ab7",
                     volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                     volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                     env_from=None,
@@ -1154,7 +1231,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="be85359e2c4b6ae1",
+                    config_hash="73bd9d78c3f4bfbb",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -1221,7 +1298,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="60131a0bfa68e4a6",
+                    config_hash="3d55f1c0bb84aac6",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-vendor", "secret": {"secretName": "vendor-token"}},
@@ -1393,3 +1470,6 @@ def test_sglang_mappings() -> None:
     }
     assert {s: sglang.get(s) for s in counters} == counters, "SGLang's counters map onto vLLM's names"
     assert "sglang:queue_time_seconds" not in sglang, "SGLang's queue time keeps its own buckets"
+    assert sglang.get("sglang:time_to_first_token_seconds") == "modelplane_sglang_ttft_seconds", (
+        "SGLang's time to first token keeps a name no other source shares"
+    )

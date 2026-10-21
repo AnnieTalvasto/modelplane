@@ -24,7 +24,20 @@ renamed onto a shared name and the gateway supplies that measurement for
 both. A histogram is renamed only where its bucket boundaries match, which is
 why SGLang's latency histograms are absent here: they resolve to a hundred
 milliseconds where vLLM's resolve to one, and a quantile across the two is
-wrong rather than approximate.
+wrong rather than approximate. SGLang's time to first token is still worth
+having, since the gateway's own histogram stops at a minute and a long prompt
+on a busy engine waits longer than that, so it keeps a name of its own,
+modelplane_sglang_ttft_seconds, which no other source shares.
+
+Matching has to hold across the fleet, not just between two engines, because
+a query sums buckets by boundary and a series with different boundaries
+corrupts the sum for everyone. So each modelplane_* histogram has
+exactly one source. The engines' token histograms can't meet that even alone:
+vLLM sizes their buckets from --max-model-len, so two vLLM deployments
+disagree. So they're exported only as their sums and counts, which have no buckets.
+
+docs/utils/validate/validate_manifests.py holds every recipe's engine to the
+versions and flags these mappings need, so a change to one changes both.
 """
 
 from models.ai.modelplane.metricmapping import v1alpha1
@@ -48,15 +61,14 @@ _GATEWAY_PROXY = {
     "envoy_cluster_upstream_rq_active": "modelplane_frontend_requests_active",
 }
 
-# The engines, which explain what the gateway measured.
+# The engines, which explain what the gateway measured. vLLM publishes these
+# names from v0.9.2.
 _VLLM = {
     "vllm:time_to_first_token_seconds": "modelplane_request_ttft_seconds",
     "vllm:e2e_request_latency_seconds": "modelplane_request_duration_seconds",
     "vllm:request_queue_time_seconds": "modelplane_request_queue_seconds",
     "vllm:request_prefill_time_seconds": "modelplane_request_prefill_seconds",
     "vllm:request_decode_time_seconds": "modelplane_request_decode_seconds",
-    "vllm:request_prompt_tokens": "modelplane_request_input_tokens",
-    "vllm:request_generation_tokens": "modelplane_request_output_tokens",
     "vllm:num_requests_running": "modelplane_requests_running",
     "vllm:num_requests_waiting": "modelplane_requests_waiting",
     "vllm:kv_cache_usage_perc": "modelplane_kv_cache_utilization_ratio",
@@ -72,18 +84,34 @@ _VLLM = {
 # cache_source (device, host, storage). sglang:queue_time_seconds is a
 # per-request histogram like vLLM's queue time, but its buckets differ from
 # vLLM's and between SGLang versions, so it isn't renamed (#523).
-# The two token histograms need --collect-tokens-histogram as well as
-# --enable-metrics; the engine publishes only the _total counters without it.
 _SGLANG = {
     "sglang:num_running_reqs": "modelplane_requests_running",
     "sglang:num_queue_reqs": "modelplane_requests_waiting",
     "sglang:token_usage": "modelplane_kv_cache_utilization_ratio",
-    "sglang:prompt_tokens_histogram": "modelplane_request_input_tokens",
-    "sglang:generation_tokens_histogram": "modelplane_request_output_tokens",
     "sglang:num_retracted_requests_total": "modelplane_requests_preempted_total",
     "sglang:cached_tokens_total": "modelplane_prefix_cache_hits_total",
     "sglang:prompt_tokens_total": "modelplane_prefix_cache_lookups_total",
+    "sglang:time_to_first_token_seconds": "modelplane_sglang_ttft_seconds",
+    "sglang:http_requests_active": "modelplane_engine_requests_active",
 }
+
+# Each engine's prompt and generation token histograms, taken as counters: the
+# prompt and generated tokens of the requests it finished, and from the prompt
+# histogram's count, the requests. A prompt's tokens include any the prefix
+# cache served. Both engines observe these histograms when a request finishes,
+# so tokens and requests count the same requests and divide into tokens per
+# request. The engines' plain token counters, vllm:prompt_tokens_total and
+# sglang:prompt_tokens_total, count tokens as they're processed instead,
+# including requests that never finish, and SGLang's already feeds
+# modelplane_prefix_cache_lookups_total. modelplane_responses_total, from
+# vllm:request_success_total, counts vLLM's finished requests by how they ended,
+# and can differ slightly from this count, as on aborted requests. Dashboards
+# count requests with modelplane_engine_requests_total, which every engine has.
+# SGLang v0.5.10 publishes these histograms only with
+# --collect-tokens-histogram as well as --enable-metrics; from v0.5.12 it
+# always does.
+_VLLM_TOKENS = ("vllm:request_prompt_tokens", "vllm:request_generation_tokens")
+_SGLANG_TOKENS = ("sglang:prompt_tokens_histogram", "sglang:generation_tokens_histogram")
 
 # The endpoint picker. A router's queue is a different measurement from an
 # engine's, so it keeps a name of its own.
@@ -92,10 +120,11 @@ _PICKER = {
 }
 
 # The GPUs, through whichever vendor's exporter the stack installed. DCGM
-# reports framebuffer memory in MiB and energy in millijoules, and both are
-# renamed onto a name that claims a different unit, so both say so.
+# reports framebuffer memory in MiB and energy in millijoules, and each is
+# renamed onto a name that claims a different unit, so each says so.
 _GPU = {
     "DCGM_FI_DEV_FB_USED": "modelplane_gpu_memory_used_bytes",
+    "DCGM_FI_DEV_FB_FREE": "modelplane_gpu_memory_free_bytes",
     "DCGM_FI_PROF_GR_ENGINE_ACTIVE": "modelplane_gpu_compute_active_ratio",
     "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE": "modelplane_gpu_tensor_active_ratio",
     "DCGM_FI_PROF_DRAM_ACTIVE": "modelplane_gpu_memory_bandwidth_ratio",
@@ -106,26 +135,81 @@ _GPU = {
 
 _GPU_UNITS = {
     "DCGM_FI_DEV_FB_USED": "Mebibytes",
+    "DCGM_FI_DEV_FB_FREE": "Mebibytes",
     "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION": "Millijoules",
 }
+
+
+# How each request vLLM finished ended, by vLLM's finished_reason renamed to
+# reason: stop, length and abort at v0.9.2, and error and repetition as well
+# from v0.23.0. A client that disconnects should end its request as abort, so abort
+# staying at 0 while clients give up means the disconnect isn't reaching the
+# engine. SGLang publishes no counter by how a request ended.
+_VLLM_RESPONSES: dict[str, object] = {
+    "from": "vllm:request_success_total",
+    "to": "modelplane_responses_total",
+    "labels": [{"name": "reason", "from": "finished_reason"}],
+}
+
+
+# How the HTTP requests SGLang answered ended, by status. SGLang counts them
+# by raw status code, which design/telemetry.md keeps out of the series: a label
+# with forty values is forty series per deployment. So the codes an
+# OpenAI-compatible server returns fold into the gateway's three classes, ok,
+# client_error and server_error, and a rarer code keeps its number. The
+# counter also carries the endpoint, which a query needs, because SGLang counts
+# /health and /metrics as well as completions. SGLang's speculative-decoding
+# gauges aren't mapped: spec_accept_rate measured accepted tokens over draft
+# tokens at v0.5.10 and accepted drafts over proposed drafts at v0.5.12, so one
+# name would hold two measurements.
+_STATUS_CLASSES = {
+    "200": "ok",
+    **dict.fromkeys(("400", "404", "422", "429"), "client_error"),
+    **dict.fromkeys(("500", "503"), "server_error"),
+}
+_SGLANG_RESPONSES: dict[str, object] = {
+    "from": "sglang:http_responses_total",
+    "to": "modelplane_engine_responses_total",
+    "labels": [{"name": "status", "from": "status_code", "values": _STATUS_CLASSES}],
+}
+
+
+def _tokens(prompt: str, generation: str) -> list[dict[str, object]]:
+    """An engine's token histograms as tokens by direction, and requests."""
+    return [
+        {
+            "from": prompt,
+            "part": "Sum",
+            "to": "modelplane_engine_tokens_total",
+            "labels": [{"name": "direction", "value": "input"}],
+        },
+        {
+            "from": generation,
+            "part": "Sum",
+            "to": "modelplane_engine_tokens_total",
+            "labels": [{"name": "direction", "value": "output"}],
+        },
+        {"from": prompt, "part": "Count", "to": "modelplane_engine_requests_total"},
+    ]
 
 
 def _mapping(
     name: str,
     pairs: dict[str, str],
     units: dict[str, str] | None = None,
+    tokens: tuple[str, str] | None = None,
+    extra: tuple[dict[str, object], ...] = (),
 ) -> v1alpha1.MetricMapping:
     units = units or {}
+    metrics: list[dict[str, object]] = [
+        {"from": src, "to": dst} | ({"fromUnit": units[src]} if src in units else {}) for src, dst in pairs.items()
+    ]
+    if tokens:
+        metrics += _tokens(*tokens)
+    metrics += extra
     return v1alpha1.MetricMapping(
         metadata=metav1.ObjectMeta(name=name),
-        spec=v1alpha1.Spec(
-            metrics=[
-                v1alpha1.Metric.model_validate(
-                    {"from": src, "to": dst} | ({"fromUnit": units[src]} if src in units else {})
-                )
-                for src, dst in pairs.items()
-            ]
-        ),
+        spec=v1alpha1.Spec(metrics=[v1alpha1.Metric.model_validate(m) for m in metrics]),
     )
 
 
@@ -139,8 +223,8 @@ def mappings() -> list[v1alpha1.MetricMapping]:
     return [
         _mapping("modelplane-gateway", _GATEWAY),
         _mapping("modelplane-gateway-proxy", _GATEWAY_PROXY),
-        _mapping("modelplane-vllm", _VLLM),
-        _mapping("modelplane-sglang", _SGLANG),
+        _mapping("modelplane-vllm", _VLLM, tokens=_VLLM_TOKENS, extra=(_VLLM_RESPONSES,)),
+        _mapping("modelplane-sglang", _SGLANG, tokens=_SGLANG_TOKENS, extra=(_SGLANG_RESPONSES,)),
         _mapping("modelplane-picker", _PICKER),
         _mapping("modelplane-gpu", _GPU, _GPU_UNITS),
     ]

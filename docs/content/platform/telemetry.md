@@ -21,13 +21,14 @@ collector has an exporter for, not only OTLP.
 Modelplane allows you to write one destination for your metrics. You don't need
 to manage per-deployment configurations or update your configuration when a
 deployment changes. The collector finds pods itself, so a leader/worker split or
-a prefill/decode pair is collected the same way as one pod.
+a prefill/decode pair doesn't need configuration of its own.
 
 ## Telemetry workflow
 
 Every series has `cluster`, `job`, and `instance` labels of the target resource.
 A series about a deployment also has `deployment`, `replica`, `namespace`,
-`engine`, and `role` labels.
+`engine`, and `role` labels. On a prefill/decode deployment, an engine's series also
+has a `phase` label, `Prefill` or `Decode`.
 
 The gateway's `modelplane_frontend_*` series have no `deployment` label. They
 carry the model instead: `gen_ai_original_model` is the model the caller sent,
@@ -45,6 +46,7 @@ combination is right follows from what the metric measures:
  - `sum by (deployment)`, for anything counted, such as requests, tokens, or queue depth.
  - `avg by (deployment)`, for a ratio.
  - `max by (deployment)`, for a saturation figure you alert on.
+ - `sum by (le)` inside `histogram_quantile`, for a histogram.
 
 To combine:
 
@@ -63,6 +65,16 @@ max by (deployment, replica) (modelplane_kv_cache_utilization_ratio)
 `instance` is the pod's address, which keeps two pods of the same replica apart. It
 turns over on every rolling update, so group by `replica` rather than by `instance`.
 
+A prefill/decode deployment runs some requests on both engines, and both count them.
+The decode engines see every request with its whole prompt, so count requests,
+tokens and how requests ended there:
+
+```promql
+sum by (deployment) (rate(modelplane_engine_requests_total{phase!="Prefill"}[5m]))
+sum by (deployment) (rate(modelplane_engine_tokens_total{direction="input", phase!="Prefill"}[5m]))
+sum by (deployment, reason) (rate(modelplane_responses_total{phase!="Prefill"}[5m]))
+```
+
 Some examples of the available metrics:
 
 | Metric | Means |
@@ -74,8 +86,8 @@ Some examples of the available metrics:
 | `modelplane_request_queue_seconds` | How long a request waited before the engine started |
 | `modelplane_requests_waiting` | Queue depth per engine |
 | `modelplane_kv_cache_utilization_ratio` | KV-cache occupancy, averaged over replicas |
-| `modelplane_request_input_tokens` | Prompt size, as a histogram |
-| `modelplane_request_output_tokens` | Generated length, as a histogram |
+| `modelplane_engine_tokens_total` | Prompt and generated tokens of the requests the engine finished, by `direction`: `input` or `output` |
+| `modelplane_engine_requests_total` | Requests the engine finished |
 | `modelplane_gpu_memory_used_bytes` | Framebuffer memory in use, per GPU |
 | `modelplane_energy_joules_total` | Energy drawn since the driver last reloaded |
 
@@ -83,7 +95,6 @@ Latency appears twice on purpose. The `frontend_` series are what your caller ex
 measured at the gateway. The engine's own series are what the engine spent. For
 example, if the frontend metric is slow and the engine isn't, you can 
 troubleshoot routing, queueing, or networking issues instead of the model.
-
 
 Saturation gauges are per replica, so how you combine them decides what you see. Average
 across a deployment to plan capacity, and take the maximum to alert: three replicas at 0.3
@@ -265,12 +276,12 @@ export to Prometheus and write recording rules there.
 
 ## Engines
 
-Modelplane already knows vLLM's and SGLang's metric names and renames them for you, so
-neither needs anything from you here. SGLang needs two flags: `--enable-metrics` to publish `/metrics` at all, and
-`--collect-tokens-histogram` for the prompt and generation histograms behind
-`modelplane_request_input_tokens` and `modelplane_request_output_tokens`. Without the
-second it publishes those as plain counters and both series are empty. vLLM needs
-nothing.
+Modelplane already knows vLLM's and SGLang's metric names and renames them for you.
+vLLM needs v0.9.2 or later, whose engine publishes the names Modelplane reads. SGLang
+needs `--enable-metrics` to publish `/metrics` at all. Before v0.5.12 it also needs
+`--collect-tokens-histogram` for the token histograms behind
+`modelplane_engine_tokens_total` and `modelplane_engine_requests_total`. Without it
+those two series are empty.
 
 ```yaml
 apiVersion: modelplane.ai/v1alpha1
@@ -309,6 +320,60 @@ engines. SGLang counts a request when it finishes, where vLLM counts it when it'
 scheduled, so an aborted request is missing from SGLang's counts. SGLang's queue time
 histogram uses different buckets from vLLM's, so only vLLM populates
 `modelplane_request_queue_seconds`.
+
+vLLM's `vllm:request_success_total` becomes `modelplane_responses_total`, the
+requests the engine finished, with vLLM's `finished_reason` renamed to `reason`:
+`stop`, `length` and `abort` at v0.9.2, and `error` and `repetition` as well from
+v0.23.0. A client that disconnects should end its request as `abort`. If `abort`
+stays at 0 while clients give up, the disconnect isn't reaching the engine, and the
+engine keeps generating output nobody reads. On a prefill/decode deployment, read
+`reason` on `phase!="Prefill"`: the prefill engine generates one token for each
+request it runs, so it reports `length` for every one. SGLang doesn't publish a
+counter of how its requests ended.
+
+SGLang does count the HTTP responses it sends, by status code. Its counter,
+`sglang:http_responses_total`, becomes `modelplane_engine_responses_total`, with the
+status code in a `status` label. The codes an OpenAI-compatible server returns become
+`ok`, `client_error` and `server_error`, the classes the gateway uses, and a rarer
+code keeps its number. The series keeps SGLang's `endpoint` label, because SGLang
+counts its `/health` and `/metrics` responses too, so filter on it. The requests
+SGLang has open, `sglang:http_requests_active`, become `modelplane_engine_requests_active`,
+with the same `endpoint` label. The vLLM mapping populates neither.
+
+The built-in mappings cover what every deployment needs, from the engine versions
+the recipes pin, which is what they're tested against: vLLM v0.9.2, v0.23.0, v0.25.1
+and v0.27.1, and SGLang v0.5.10 and v0.5.12. Metrics for a feature you turn on, such
+as speculative decoding or a KV offload tier, aren't among them. Write a
+`MetricMapping` for those alongside the deployment that turns the feature on. The
+speculative decoding variant of the [Qwen3-8B recipe]({{< ref "/recipes/qwen3-8b.md#speculative-decoding" >}})
+includes one. SGLang's `spec_accept_rate` and `spec_accept_length` aren't mapped,
+because what `spec_accept_rate` measures changed between v0.5.10 and v0.5.12. For a
+KV offload tier, which vLLM runs from v0.27.1 with
+`--kv-offloading-backend`:
+
+```yaml
+apiVersion: modelplane.ai/v1alpha1
+kind: MetricMapping
+metadata:
+  name: vllm-kv-offload
+spec:
+  metrics:
+  - from: vllm:kv_offload_store_bytes_total
+    to: modelplane_kv_offload_store_bytes_total
+  - from: vllm:kv_offload_load_bytes_total
+    to: modelplane_kv_offload_load_bytes_total
+  - from: vllm:kv_offload_store_time_total
+    to: modelplane_kv_offload_store_seconds_total
+  - from: vllm:kv_offload_load_time_total
+    to: modelplane_kv_offload_load_seconds_total
+```
+
+SGLang publishes `modelplane_requests_running` and `modelplane_requests_waiting` more
+than once per engine under `--enable-priority-scheduling`, once in total and once per
+priority, and once per tensor-parallel rank under
+`--enable-metrics-for-all-schedulers`. With either flag, a sum over them counts each
+request more than once. Keeping only one of those series is tracked in
+[#549](https://github.com/modelplaneai/modelplane/issues/549).
 
 Because the gateway, not the engine, measures the `modelplane_frontend_*` series, they
 work without configuration for an engine Modelplane has never seen.
@@ -415,12 +480,13 @@ Don't run two exporters: the collector scrapes every matching pod and would
 collect each GPU twice.
 
 The exporter's metrics ConfigMap decides which DCGM fields it publishes.
-Modelplane maps seven to the `modelplane_*` surface and converts units where
+Modelplane maps eight to the `modelplane_*` surface and converts units where
 DCGM reports in different ones:
 
 | DCGM field | Becomes | Unit |
 | --- | --- | --- |
 | `DCGM_FI_DEV_FB_USED` | `modelplane_gpu_memory_used_bytes` | MiB, converted to bytes |
+| `DCGM_FI_DEV_FB_FREE` | `modelplane_gpu_memory_free_bytes` | MiB, converted to bytes |
 | `DCGM_FI_PROF_GR_ENGINE_ACTIVE` | `modelplane_gpu_compute_active_ratio` | ratio |
 | `DCGM_FI_PROF_PIPE_TENSOR_ACTIVE` | `modelplane_gpu_tensor_active_ratio` | ratio |
 | `DCGM_FI_PROF_DRAM_ACTIVE` | `modelplane_gpu_memory_bandwidth_ratio` | ratio |
@@ -428,14 +494,14 @@ DCGM reports in different ones:
 | `DCGM_FI_DEV_POWER_USAGE` | `modelplane_gpu_power_watts` | watts |
 | `DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION` | `modelplane_energy_joules_total` | millijoules, converted to joules |
 
-Recent default exporter configurations publish all seven, but older ones left
-the `DCGM_FI_PROF_*` profiling fields out. Check what yours publishes - a
+Recent default exporter configurations publish all eight, but older ones left the
+`DCGM_FI_PROF_*` profiling fields out. Check what yours publishes - a
 missing field means its `modelplane_*` series is silently empty:
 
 ```bash
 kubectl port-forward -n <exporter-namespace> ds/<exporter> 9400:9400 &
 curl -s localhost:9400/metrics | grep -c -E \
-  'DCGM_FI_DEV_FB_USED|DCGM_FI_PROF_GR_ENGINE_ACTIVE|DCGM_FI_PROF_PIPE_TENSOR_ACTIVE|DCGM_FI_PROF_DRAM_ACTIVE|DCGM_FI_DEV_GPU_TEMP|DCGM_FI_DEV_POWER_USAGE|DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION'
+  'DCGM_FI_DEV_FB_(USED|FREE)|DCGM_FI_PROF_(GR_ENGINE_ACTIVE|PIPE_TENSOR_ACTIVE|DRAM_ACTIVE)|DCGM_FI_DEV_(GPU_TEMP|POWER_USAGE|TOTAL_ENERGY_CONSUMPTION)'
 ```
 
 If fields are missing, extend the exporter's metrics ConfigMap - on a GPU
@@ -443,12 +509,40 @@ Operator install that's the `dcgmExporter.config` chart value. The
 configuration Modelplane installs on the clouds it provisions publishes each
 of these fields.
 
+For a question about tensor parallelism over PCIe, map DCGM's PCIe and SM fields
+too:
+
+```yaml
+apiVersion: modelplane.ai/v1alpha1
+kind: MetricMapping
+metadata:
+  name: dcgm-interconnect
+spec:
+  metrics:
+  - from: DCGM_FI_PROF_PCIE_TX_BYTES
+    to: modelplane_gpu_pcie_transmit_bytes_per_second
+  - from: DCGM_FI_PROF_PCIE_RX_BYTES
+    to: modelplane_gpu_pcie_receive_bytes_per_second
+  - from: DCGM_FI_PROF_SM_ACTIVE
+    to: modelplane_gpu_sm_active_ratio
+  - from: DCGM_FI_PROF_SM_OCCUPANCY
+    to: modelplane_gpu_sm_occupancy_ratio
+```
+
+DCGM samples PCIe traffic as a rate, in bytes per second, so read the two PCIe series
+as they are and don't take `rate()` of them.
+
 ## Why engine latency and gateway latency differ
 
 `modelplane_request_ttft_seconds` comes from the engine, and engines bucket their
 histograms differently. vLLM resolves down to a millisecond. SGLang resolves to a hundred
 of them. A quantile across both is wrong, not approximate. Use the engine series to compare
 one engine against itself, and the `frontend_` series for anything fleet-wide.
+
+SGLang's time to first token is `modelplane_sglang_ttft_seconds`, a name of its own,
+so it never mixes with vLLM's buckets. Its buckets run to 400 seconds where the
+gateway's stop at 60, so it's the series to read when SGLang's first tokens take
+longer than a minute.
 
 Some measurements don't translate at all. SGLang's inter-token latency isn't vLLM's time per
 output token, so neither is renamed onto a shared name. The gateway measures time per output

@@ -80,6 +80,12 @@ _EPP_ENV_POOL_NAME = "MODELPLANE_POOL_NAME"
 _EPP_ENV_POOL_NAMESPACE = "MODELPLANE_POOL_NAMESPACE"
 _EPP_ENV_CONFIG = "MODELPLANE_PICKER_CONFIG"
 
+# The ports Modelplane expects the picker to serve on, set in its environment
+# too, so its command line names them rather than repeating the numbers.
+_EPP_ENV_GRPC_PORT = "MODELPLANE_GRPC_PORT"
+_EPP_ENV_GRPC_HEALTH_PORT = "MODELPLANE_GRPC_HEALTH_PORT"
+_EPP_ENV_METRICS_PORT = "MODELPLANE_METRICS_PORT"
+
 # The picker counts as available while its rollout progresses. A rollout past
 # its progress deadline, such as a new picker that rejects its configuration
 # and never becomes ready while the old one keeps serving, makes it not.
@@ -253,9 +259,9 @@ def _default_picker() -> dict[str, Any]:
             f"--pool-namespace=$({_EPP_ENV_POOL_NAMESPACE})",
             "--pool-group=inference.networking.k8s.io",
             f"--config-file=$({_EPP_ENV_CONFIG})",
-            f"--grpc-port={_EPP_GRPC_PORT}",
-            f"--grpc-health-port={_EPP_GRPC_HEALTH_PORT}",
-            f"--metrics-port={_EPP_METRICS_PORT}",
+            f"--grpc-port=$({_EPP_ENV_GRPC_PORT})",
+            f"--grpc-health-port=$({_EPP_ENV_GRPC_HEALTH_PORT})",
+            f"--metrics-port=$({_EPP_ENV_METRICS_PORT})",
             # llm-d's picker authenticates scrapes by TokenReview by default,
             # which needs the system:auth-delegator ClusterRole its
             # ServiceAccount can't be given namespace-scoped, so every scrape
@@ -488,9 +494,10 @@ def _epp_objects(
 
     container, config_yaml and image_pull_secrets are the picker as the user's
     serving.endpointPicker writes it, or the default for the serving strategy.
-    Modelplane adds what only it knows to the container: the pool, as
-    environment, and where the configuration is mounted. It also adds the ports
-    every picker serves, and the readiness probe. A picker with no
+    Modelplane adds what only it knows to the container as environment: the
+    pool, the ports it expects the picker to serve on, and where the
+    configuration is mounted. It also declares those ports, and adds the
+    readiness probe. A picker with no
     configuration gets no ConfigMap.
     """
     epp = f"{name}-epp"
@@ -536,6 +543,9 @@ def _epp_objects(
     env = [
         {"name": _EPP_ENV_POOL_NAME, "value": pool},
         {"name": _EPP_ENV_POOL_NAMESPACE, "value": ns},
+        {"name": _EPP_ENV_GRPC_PORT, "value": str(_EPP_GRPC_PORT)},
+        {"name": _EPP_ENV_GRPC_HEALTH_PORT, "value": str(_EPP_GRPC_HEALTH_PORT)},
+        {"name": _EPP_ENV_METRICS_PORT, "value": str(_EPP_METRICS_PORT)},
     ]
     mounts: list[dict] = []
     volumes: list[dict] = []

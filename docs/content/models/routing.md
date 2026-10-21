@@ -100,10 +100,12 @@ args to pass on:
 | `MODELPLANE_POOL_NAME` | The InferencePool the picker serves |
 | `MODELPLANE_POOL_NAMESPACE` | The pool's namespace |
 | `MODELPLANE_PICKER_CONFIG` | The path of the mounted `config`, when you set one |
+| `MODELPLANE_GRPC_PORT` | The port the gateway calls the picker on, 9002 |
+| `MODELPLANE_GRPC_HEALTH_PORT` | The port of the picker's gRPC health service, 9003 |
+| `MODELPLANE_METRICS_PORT` | The port the picker serves Prometheus metrics on, 9090 |
 
-The picker serves the gateway's gRPC on port 9002, gRPC health on 9003, and
-Prometheus metrics on 9090. Modelplane declares those ports, and the picker is
-ready when its gRPC health service on 9003 says so. This container runs llm-d's
+The picker must serve on the three ports. Modelplane declares them, and the
+picker is ready when its gRPC health service says so. This container runs llm-d's
 picker:
 
 ```yaml {nocopy=true}
@@ -115,9 +117,9 @@ containers:
   - --pool-namespace=$(MODELPLANE_POOL_NAMESPACE)
   - --pool-group=inference.networking.k8s.io
   - --config-file=$(MODELPLANE_PICKER_CONFIG)
-  - --grpc-port=9002
-  - --grpc-health-port=9003
-  - --metrics-port=9090
+  - --grpc-port=$(MODELPLANE_GRPC_PORT)
+  - --grpc-health-port=$(MODELPLANE_GRPC_HEALTH_PORT)
+  - --metrics-port=$(MODELPLANE_METRICS_PORT)
   - --metrics-endpoint-auth=false
 ```
 
@@ -255,9 +257,9 @@ spec:
                 - --pool-namespace=$(MODELPLANE_POOL_NAMESPACE)
                 - --pool-group=inference.networking.k8s.io
                 - --config-file=$(MODELPLANE_PICKER_CONFIG)
-                - --grpc-port=9002
-                - --grpc-health-port=9003
-                - --metrics-port=9090
+                - --grpc-port=$(MODELPLANE_GRPC_PORT)
+                - --grpc-health-port=$(MODELPLANE_GRPC_HEALTH_PORT)
+                - --metrics-port=$(MODELPLANE_METRICS_PORT)
                 - --metrics-endpoint-auth=false
           config:
             apiVersion: llm-d.ai/v1alpha1

@@ -136,7 +136,7 @@ spec:
                         - rule: "!has(self.endpointPicker) || (has(self.router) && self.router == 'EndpointPicker')"
                           message: "serving.endpointPicker may only be set when serving.router is EndpointPicker"
                         - rule: "!has(self.router) || has(self.endpointPicker)"
-                          message: "serving.router EndpointPicker requires serving.endpointPicker with its image and config"
+                          message: "serving.router EndpointPicker requires serving.endpointPicker with its template"
                         - rule: "self.mode != 'PrefillDecode' || (has(self.router) && self.router == 'EndpointPicker')"
                           message: "PrefillDecode serving requires serving.router EndpointPicker and serving.endpointPicker"
                         description: >-
@@ -170,26 +170,133 @@ spec:
                           endpointPicker:
                             type: object
                             description: >-
-                              The endpoint picker's image and configuration. Required
-                              exactly when router is EndpointPicker. Modelplane composes
-                              the picker's pool, Service and RBAC around it.
-                            required: [image, config]
+                              The endpoint picker Modelplane runs in front of the serving pods.
+                              Required exactly when router is EndpointPicker. Modelplane composes the
+                              picker's InferencePool, Service and RBAC around it.
+                            required: [template]
                             properties:
-                              image:
-                                type: string
-                                minLength: 1
+                              template:
+                                type: object
                                 description: >-
-                                  The endpoint picker image. A configuration is written for
-                                  one picker release, so it names its picker.
+                                  Pod template for the picker. A curated subset of PodTemplateSpec, like a
+                                  member's. The user writes the picker's command line, since each picker
+                                  spells it differently.
+                                required: [spec]
+                                properties:
+                                  spec:
+                                    type: object
+                                    required: [containers]
+                                    properties:
+                                      containers:
+                                        type: array
+                                        minItems: 1
+                                        maxItems: 1
+                                        x-kubernetes-list-type: map
+                                        x-kubernetes-list-map-keys: [name]
+                                        description: >-
+                                          The picker container, named "epp". Modelplane sets MODELPLANE_POOL_NAME,
+                                          MODELPLANE_POOL_NAMESPACE and, when config is set,
+                                          MODELPLANE_PICKER_CONFIG in its environment, for its args to pass on as
+                                          $(MODELPLANE_POOL_NAME). The picker serves the gateway's gRPC on 9002,
+                                          gRPC health on 9003 and Prometheus metrics on 9090. Modelplane declares
+                                          those ports, and probes readiness on 9003.
+                                        x-kubernetes-validations:
+                                        - rule: "self.all(c, c.name == 'epp')"
+                                          message: "the endpoint picker's container must be named 'epp'"
+                                        items:
+                                          type: object
+                                          required: [name, image]
+                                          properties:
+                                            name:
+                                              type: string
+                                              minLength: 1
+                                              maxLength: 63
+                                            image:
+                                              type: string
+                                              minLength: 1
+                                            command:
+                                              type: array
+                                              items:
+                                                type: string
+                                            args:
+                                              type: array
+                                              items:
+                                                type: string
+                                            env:
+                                              type: array
+                                              items:
+                                                type: object
+                                                required: [name]
+                                                properties:
+                                                  name:
+                                                    type: string
+                                                  value:
+                                                    type: string
+                                                  valueFrom:
+                                                    type: object
+                                                    properties:
+                                                      secretKeyRef:
+                                                        type: object
+                                                        required: [name, key]
+                                                        properties:
+                                                          name:
+                                                            type: string
+                                                          key:
+                                                            type: string
+                                                          optional:
+                                                            type: boolean
+                                                      configMapKeyRef:
+                                                        type: object
+                                                        required: [name, key]
+                                                        properties:
+                                                          name:
+                                                            type: string
+                                                          key:
+                                                            type: string
+                                                          optional:
+                                                            type: boolean
+                                                      fieldRef:
+                                                        type: object
+                                                        required: [fieldPath]
+                                                        properties:
+                                                          fieldPath:
+                                                            type: string
+                                                          apiVersion:
+                                                            type: string
+                                            resources:
+                                              type: object
+                                              x-kubernetes-validations:
+                                              - rule: "(!has(self.requests) || self.requests.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])) && (!has(self.limits) || self.limits.all(k, k in ['cpu', 'memory', 'ephemeral-storage']))"
+                                                message: "resources take only cpu, memory and ephemeral-storage; a member gets devices from its node pool's device requests"
+                                              properties:
+                                                requests:
+                                                  type: object
+                                                  maxProperties: 3
+                                                  additionalProperties:
+                                                    anyOf: [{type: integer}, {type: string}]
+                                                    x-kubernetes-int-or-string: true
+                                                limits:
+                                                  type: object
+                                                  maxProperties: 3
+                                                  additionalProperties:
+                                                    anyOf: [{type: integer}, {type: string}]
+                                                    x-kubernetes-int-or-string: true
+                                      imagePullSecrets:
+                                        type: array
+                                        items:
+                                          type: object
+                                          required: [name]
+                                          properties:
+                                            name:
+                                              type: string
                               config:
                                 type: object
                                 x-kubernetes-preserve-unknown-fields: true
                                 minProperties: 1
                                 description: >-
-                                  The picker's configuration, such as an llm-d
-                                  EndpointPickerConfig, passed to the picker without
-                                  Modelplane reading it. It replaces Modelplane's default
-                                  configuration whole.
+                                  The picker's configuration, such as an llm-d EndpointPickerConfig.
+                                  Modelplane mounts it at $(MODELPLANE_PICKER_CONFIG) without reading it.
+                                  Omitted for a picker that takes no configuration.
                       tolerations:
                         type: array
                         description: >-
@@ -635,14 +742,19 @@ spec:
                                                   description: >-
                                                     CPU and memory requests and limits. On the engine container,
                                                     Modelplane adds the member's device claim beside them.
+                                                  x-kubernetes-validations:
+                                                  - rule: "(!has(self.requests) || self.requests.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])) && (!has(self.limits) || self.limits.all(k, k in ['cpu', 'memory', 'ephemeral-storage']))"
+                                                    message: "resources take only cpu, memory and ephemeral-storage; a member gets devices from its node pool's device requests"
                                                   properties:
                                                     requests:
                                                       type: object
+                                                      maxProperties: 3
                                                       additionalProperties:
                                                         anyOf: [{type: integer}, {type: string}]
                                                         x-kubernetes-int-or-string: true
                                                     limits:
                                                       type: object
+                                                      maxProperties: 3
                                                       additionalProperties:
                                                         anyOf: [{type: integer}, {type: string}]
                                                         x-kubernetes-int-or-string: true

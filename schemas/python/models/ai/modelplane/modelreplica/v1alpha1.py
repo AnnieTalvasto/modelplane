@@ -135,8 +135,8 @@ class ReadinessProbe(BaseModel):
 
 
 class Resources(BaseModel):
-    limits: dict[str, int | str] | None = None
-    requests: dict[str, int | str] | None = None
+    limits: dict[str, int | str] | None = Field(None, max_length=3)
+    requests: dict[str, int | str] | None = Field(None, max_length=3)
 
 
 class Container(BaseModel):
@@ -203,9 +203,33 @@ class ModelCacheRef(BaseModel):
     name: constr(min_length=1)
 
 
-class EndpointPicker(BaseModel):
-    config: dict[str, Any] = Field(..., min_length=1)
+class ValueFromModel(BaseModel):
+    configMapKeyRef: ConfigMapKeyRef | None = None
+    fieldRef: FieldRef | None = None
+    secretKeyRef: SecretKeyRef | None = None
+
+
+class ContainerModel(BaseModel):
+    args: list[str] | None = None
+    command: list[str] | None = None
+    env: list[EnvItem] | None = None
     image: constr(min_length=1)
+    name: constr(min_length=1, max_length=63)
+    resources: Resources | None = None
+
+
+class SpecModel(BaseModel):
+    containers: list[ContainerModel] = Field(..., max_length=1, min_length=1)
+    imagePullSecrets: list[ImagePullSecret] | None = None
+
+
+class TemplateModel(BaseModel):
+    spec: SpecModel
+
+
+class EndpointPicker(BaseModel):
+    config: dict[str, Any] | None = Field(None, min_length=1)
+    template: TemplateModel
 
 
 class Serving(BaseModel):
@@ -214,7 +238,7 @@ class Serving(BaseModel):
     router: Literal['EndpointPicker'] | None = None
 
 
-class SpecModel(BaseModel):
+class SpecModel1(BaseModel):
     clusterName: constr(min_length=1)
     """
     Name of the InferenceCluster this replica is pinned to. Replicas are pinned at creation time. If the cluster is temporarily unavailable the replica stays pinned and the parent ModelDeployment surfaces the degraded state via its conditions. If the cluster is deleted entirely the parent ModelDeployment re-places the replica on another viable cluster.
@@ -266,7 +290,7 @@ class ModelReplica(BaseModel):
     """
     Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
     """
-    spec: SpecModel
+    spec: SpecModel1
     status: Status | None = None
 
 

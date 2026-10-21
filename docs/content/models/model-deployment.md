@@ -96,8 +96,8 @@ serving:
   mode: PrefillDecode       # the two engines below are one P/D pair
   router: EndpointPicker    # required under PrefillDecode
   endpointPicker:           # required with router
-    image: ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0
-    config: {...}
+    template: {...}         # the picker container
+    config: {...}           # the picker configuration
 engines:
 - name: prefill
   phase: Prefill
@@ -109,8 +109,7 @@ A `PrefillDecode` deployment writes its own routing. The endpoint picker's
 configuration must suit your engines, and the llm-d sidecar in the decode pod
 must match their KV connector. Set `serving.router: EndpointPicker` and
 `serving.endpointPicker`, as [Configure Routing]({{< ref "routing.md" >}})
-describes. The [Kimi-K2 recipe]({{< ref "/recipes/kimi-k2" >}}) is a complete
-vLLM example.
+describes. The disaggregated example below is a complete vLLM pair.
 
 Disaggregation pays off for large models under load with strict latency targets
 and long context. For small models or low traffic, the KV-transfer overhead
@@ -264,7 +263,7 @@ autoscaling.
 {{< manifests "concepts/model-deployment-multinode.yaml" >}}
 {{< /tab >}}
 {{< tab "Disaggregated" >}}
-{{< manifests "recipes/kimi-k2/model-deployment.yaml" >}}
+{{< manifests "concepts/model-deployment-disaggregated.yaml" >}}
 {{< /tab >}}
 {{< /tabs >}}
 <!-- vale write-good.Passive = YES -->

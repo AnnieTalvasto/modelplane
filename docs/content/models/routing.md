@@ -22,10 +22,10 @@ How much you write depends on the serving mode:
 - **`Unified`.** Modelplane routes your deployment with llm-d's endpoint
   picker, which picks a pod by prefix cache and load. You don't write anything.
   To tune the picker, set `serving.router: EndpointPicker` and write the
-  picker's image and configuration in `serving.endpointPicker`.
+  picker's container and configuration in `serving.endpointPicker`.
 - **`PrefillDecode`.** You write the router. Set
-  `serving.router: EndpointPicker`, the picker's configuration in
-  `serving.endpointPicker`, and the sidecar in the decode member. Modelplane
+  `serving.router: EndpointPicker`, the picker in `serving.endpointPicker`,
+  and the sidecar in the decode member. Modelplane
   rejects a `PrefillDecode` deployment without `router` and `endpointPicker`.
   It warns when the decode pod has no container beside the engine, but it
   can't tell whether that container is the sidecar.
@@ -33,14 +33,15 @@ How much you write depends on the serving mode:
 ## What you write for prefill/decode
 
 This decode member is vLLM with NIXL, and the comments mark what you write. The
-[Kimi-K2 recipe]({{< ref "/recipes/kimi-k2" >}}) is the whole deployment.
+[disaggregated example]({{< ref "model-deployment.md#examples" >}}) is the whole
+deployment.
 
 ```yaml {nocopy=true}
 serving:
   mode: PrefillDecode
   router: EndpointPicker
   endpointPicker:
-    image: ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0  # the picker image
+    template: { ... }                # the picker container
     config: { ... }                  # the picker configuration
 engines:
 - name: decode
@@ -89,29 +90,51 @@ memory. It doesn't add the sidecar or any KV transfer environment.
 
 ## The endpoint picker
 
-- `image` is the picker image, and `config` is its configuration, such as an
-  llm-d `EndpointPickerConfig`. Modelplane passes the configuration to the
-  picker without checking it.
-- `router: EndpointPicker` requires both. The configuration format changes
-  between picker releases, and the image pins the picker your configuration is
-  for. Modelplane upgrades don't change it.
-- A `config` replaces the default. Modelplane doesn't merge the two.
-- Under `Unified`, leave out `router` and `endpointPicker` to get Modelplane's
-  picker and [default configuration](#picker-configurations).
+`serving.endpointPicker.template` is the picker's pod, with one container named
+`epp`. You write its image and command line, because each picker spells its
+flags differently. Modelplane sets these variables in its environment, for the
+args to pass on:
 
-Modelplane runs the image with llm-d's router command line:
+| Variable | Value |
+|---|---|
+| `MODELPLANE_POOL_NAME` | The InferencePool the picker serves |
+| `MODELPLANE_POOL_NAMESPACE` | The pool's namespace |
+| `MODELPLANE_PICKER_CONFIG` | The path of the mounted `config`, when you set one |
 
-```text {nocopy=true}
---pool-name=<replica>-pool --pool-namespace=<namespace>
---pool-group=inference.networking.k8s.io --config-file=/config/epp-config.yaml
---grpc-port=9002 --grpc-health-port=9003 --metrics-port=9090
---metrics-endpoint-auth=false
+The picker serves the gateway's gRPC on port 9002, gRPC health on 9003, and
+Prometheus metrics on 9090. Modelplane declares those ports, and the picker is
+ready when its gRPC health service on 9003 says so. This container runs llm-d's
+picker:
+
+```yaml {nocopy=true}
+containers:
+- name: epp
+  image: ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0
+  args:
+  - --pool-name=$(MODELPLANE_POOL_NAME)
+  - --pool-namespace=$(MODELPLANE_POOL_NAMESPACE)
+  - --pool-group=inference.networking.k8s.io
+  - --config-file=$(MODELPLANE_PICKER_CONFIG)
+  - --grpc-port=9002
+  - --grpc-health-port=9003
+  - --metrics-port=9090
+  - --metrics-endpoint-auth=false
 ```
 
-The picker serves gRPC on port 9002, and Modelplane checks that it's ready
-through its gRPC health service on 9003. Under `PrefillDecode`, Modelplane labels
-each engine's pods `llm-d.ai/role: prefill` or `llm-d.ai/role: decode`, which
-llm-d's `prefill-filter` and `decode-filter` select on.
+llm-d's picker authenticates metrics scrapes by default, which rejects the
+collector's, so keep `--metrics-endpoint-auth=false`. The container can also
+set `env` and `resources`, and the template can set `imagePullSecrets`.
+
+`config` is the picker's configuration, such as an llm-d
+`EndpointPickerConfig`. Modelplane mounts it without checking it, and it
+replaces the default configuration rather than merging with it. Leave it out
+for a picker that takes no configuration.
+
+Under `Unified`, leave out `router` and `endpointPicker` to get Modelplane's
+llm-d picker and [default configuration](#picker-configurations). Under
+`PrefillDecode`, Modelplane labels each engine's pods `llm-d.ai/role: prefill`
+or `llm-d.ai/role: decode`, which llm-d's `prefill-filter` and `decode-filter`
+select on.
 
 A picker that rejects its configuration never becomes ready:
 
@@ -222,7 +245,20 @@ spec:
         mode: PrefillDecode
         router: EndpointPicker
         endpointPicker:
-          image: ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0
+          template:
+            spec:
+              containers:
+              - name: epp
+                image: ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0
+                args:
+                - --pool-name=$(MODELPLANE_POOL_NAME)
+                - --pool-namespace=$(MODELPLANE_POOL_NAMESPACE)
+                - --pool-group=inference.networking.k8s.io
+                - --config-file=$(MODELPLANE_PICKER_CONFIG)
+                - --grpc-port=9002
+                - --grpc-health-port=9003
+                - --metrics-port=9090
+                - --metrics-endpoint-auth=false
           config:
             apiVersion: llm-d.ai/v1alpha1
             kind: EndpointPickerConfig
@@ -425,11 +461,12 @@ deployment. After the upgrade, a `PrefillDecode` deployment without `router`
 and `endpointPicker` stops reconciling. Its `ModelReplica` reports the error,
 and its pods and router keep serving as they were. To resume, add:
 
-- `serving.router: EndpointPicker`, with `serving.endpointPicker`'s `image` and
-  `config`.
+- `serving.router: EndpointPicker`, with the picker's container and
+  configuration in `serving.endpointPicker`.
 - The sidecar in the decode member, on port 8000, with the engine's `http` port
   declared.
 - `VLLM_NIXL_SIDE_CHANNEL_HOST` and `VLLM_NIXL_SIDE_CHANNEL_PORT` on both
   engines, for vLLM with NIXL.
 
-The [Kimi-K2 recipe]({{< ref "/recipes/kimi-k2" >}}) shows each one.
+The [disaggregated example]({{< ref "model-deployment.md#examples" >}}) shows
+each one.

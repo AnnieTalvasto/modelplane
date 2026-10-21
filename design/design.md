@@ -582,10 +582,10 @@ configuration from the shape of the `engines` block.
 
 A `Unified` deployment gets its cluster's routing by default. A
 `PrefillDecode` deployment writes its own: it sets
-`serving.router: EndpointPicker`, the endpoint picker's image and configuration
-in `serving.endpointPicker`, and the sidecar the picker needs as a container in
-the decode member's template. A wrong prefill/decode default reports Ready and
-rejects requests, so there isn't one. See
+`serving.router: EndpointPicker`, the endpoint picker's container and
+configuration in `serving.endpointPicker`, and the sidecar the picker needs as a
+container in the decode member's template. A wrong prefill/decode default
+reports Ready and rejects requests, so there isn't one. See
 [user-authored routing](./user-authored-routing.md).
 
 By default, under `Unified` serving, Modelplane assumes:
@@ -643,7 +643,7 @@ spec:
     mode: PrefillDecode
     router: EndpointPicker
     endpointPicker:
-      image: ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0
+      template: {...} # the picker container, with its command line
       config: {...}   # an EndpointPickerConfig with a prefill/decode decider
   engines:
   - name: prefill

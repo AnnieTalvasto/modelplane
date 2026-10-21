@@ -115,11 +115,11 @@ def _model_deployment(
     )
     xr = v1alpha1.ModelDeployment(
         metadata=metav1.ObjectMeta(name="my-model", namespace="ml-team"),
-        spec=v1alpha1.SpecModel1(
+        spec=v1alpha1.SpecModel2(
             replicas=replicas,
-            template=v1alpha1.TemplateModel(
+            template=v1alpha1.TemplateModel1(
                 metadata=v1alpha1.Metadata(labels=template_labels) if template_labels is not None else None,
-                spec=v1alpha1.SpecModel(
+                spec=v1alpha1.SpecModel1(
                     clusterSelector=cluster_selector,
                     modelCacheRef=v1alpha1.ModelCacheRef(name=model_cache) if model_cache is not None else None,
                     serving=v1alpha1.Serving(
@@ -1818,7 +1818,17 @@ COMPOSE_CASES = [
                     model_cache=None,
                     serving_mode="PrefillDecode",
                     endpoint_picker={
-                        "image": "ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "name": "epp",
+                                        "image": "ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
+                                        "args": ["--pool-name=$(MODELPLANE_POOL_NAME)"],
+                                    }
+                                ]
+                            }
+                        },
                         "config": {"kind": "EndpointPickerConfig", "plugins": [{"type": "always-disagg-pd-decider"}]},
                     },
                     sidecar={
@@ -1863,7 +1873,17 @@ COMPOSE_CASES = [
                         model_cache=None,
                         serving_mode="PrefillDecode",
                         endpoint_picker={
-                            "image": "ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
+                            "template": {
+                                "spec": {
+                                    "containers": [
+                                        {
+                                            "name": "epp",
+                                            "image": "ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
+                                            "args": ["--pool-name=$(MODELPLANE_POOL_NAME)"],
+                                        }
+                                    ]
+                                }
+                            },
                             "config": {
                                 "kind": "EndpointPickerConfig",
                                 "plugins": [{"type": "always-disagg-pd-decider"}],

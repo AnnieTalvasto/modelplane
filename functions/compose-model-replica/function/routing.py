@@ -28,13 +28,13 @@ the strategy:
   Service.
 
 serving.router says who writes the router's behaviour. PrefillDecode requires
-router: EndpointPicker and a picker config (the XRD enforces it), because a
-wrong prefill/decode default reports Ready and rejects requests. The user
-writes the picker's configuration and, as a container in the decode pod, the
-disaggregation sidecar with the --kv-connector that matches their engines; this
-layer injects nothing into their pods. Unified has a default: without a
-router, the cluster routes the replica with Modelplane's picker configuration,
-which reads --block-size from the engine's args (#179).
+router: EndpointPicker and a picker (the XRD enforces it), because a wrong
+prefill/decode default reports Ready and rejects requests. The user writes the
+picker's container, its configuration and, as a container in the decode pod,
+the disaggregation sidecar with the --kv-connector that matches their engines;
+this layer injects nothing into their pods. Unified has a default: without a
+router, the cluster routes the replica with llm-d's picker and Modelplane's
+configuration, which reads --block-size from the engine's args (#179).
 
 The backends build no routing of their own, so a strategy only adds resources
 (and decorates the serving pods) - nothing is removed.
@@ -69,10 +69,16 @@ def _namespace(meta: metav1.ObjectMeta | None) -> str:
 _EPP_IMAGE = "ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0"
 
 # The picker's gRPC ports: ext-proc for the gateway, and the health service its
-# readiness probe calls. Both are set as flags rather than left to the image's
-# defaults, since the user can name the image.
+# readiness probe calls. Every picker serves these, whatever it's called with.
 _EPP_GRPC_PORT = 9002
 _EPP_GRPC_HEALTH_PORT = 9003
+
+# What only Modelplane knows about a picker, set in its environment for its
+# command line to pass on. The user writes the command line, because each
+# picker spells it differently.
+_EPP_ENV_POOL_NAME = "MODELPLANE_POOL_NAME"
+_EPP_ENV_POOL_NAMESPACE = "MODELPLANE_POOL_NAMESPACE"
+_EPP_ENV_CONFIG = "MODELPLANE_PICKER_CONFIG"
 
 # The picker counts as available while its rollout progresses. A rollout past
 # its progress deadline, such as a new picker that rejects its configuration
@@ -205,7 +211,7 @@ def prefill_decode_routing_missing(replica: v1alpha1.ModelReplica) -> bool:
     """Whether a PrefillDecode replica lacks the routing the XRD requires.
 
     The XRD rejects a PrefillDecode replica without router: EndpointPicker and
-    a picker config, but CEL rules don't apply to an object stored before them
+    a picker, but CEL rules don't apply to an object stored before them
     and left unchanged, so such a replica can still reach the function.
     Composing it would leave its decode pods without a sidecar, a pair that
     reports Ready and serves decode alone, so the caller stops instead and
@@ -237,20 +243,50 @@ def decode_without_sidecar(replica: v1alpha1.ModelReplica) -> bool:
     return all(c.name == "engine" for c in member.template.spec.containers)
 
 
-def _picker(replica: v1alpha1.ModelReplica, default_config_yaml: str | None) -> tuple[str, str]:
-    """The picker image and configuration the replica runs.
+def _default_picker() -> dict[str, Any]:
+    """The picker container a replica runs when it doesn't set serving.router: llm-d's."""
+    return {
+        "name": "epp",
+        "image": _EPP_IMAGE,
+        "args": [
+            f"--pool-name=$({_EPP_ENV_POOL_NAME})",
+            f"--pool-namespace=$({_EPP_ENV_POOL_NAMESPACE})",
+            "--pool-group=inference.networking.k8s.io",
+            f"--config-file=$({_EPP_ENV_CONFIG})",
+            f"--grpc-port={_EPP_GRPC_PORT}",
+            f"--grpc-health-port={_EPP_GRPC_HEALTH_PORT}",
+            f"--metrics-port={_EPP_METRICS_PORT}",
+            # llm-d's picker authenticates scrapes by TokenReview by default,
+            # which needs the system:auth-delegator ClusterRole its
+            # ServiceAccount can't be given namespace-scoped, so every scrape
+            # would be rejected. Off, the endpoint is plain HTTP on the pod
+            # network, as every engine's /metrics is.
+            "--metrics-endpoint-auth=false",
+        ],
+    }
 
-    With router: EndpointPicker, the replica's serving.endpointPicker sets both,
-    and its config replaces the default whole rather than merging with it.
-    Otherwise the replica runs Modelplane's image and default_config_yaml, which
-    only a Unified replica has.
+
+def _picker(
+    replica: v1alpha1.ModelReplica, default_config_yaml: str | None
+) -> tuple[dict[str, Any], str | None, list[dict]]:
+    """The picker container, its configuration and the pod's image pull secrets.
+
+    With router: EndpointPicker, the replica's serving.endpointPicker sets all
+    three, and its config replaces the default whole rather than merging with
+    it. It may set no config, for a picker that takes none. Otherwise the
+    replica runs llm-d's picker with default_config_yaml, which only a Unified
+    replica has.
     """
     serving = replica.spec.serving
     picker = serving.endpointPicker if serving and _user_routed(replica) else None
     if picker is not None:
-        return picker.image, _render_picker_config(picker.config)
+        spec = picker.template.spec
+        container = spec.containers[0].model_dump(exclude_none=True)
+        secrets = [s.model_dump(exclude_none=True) for s in spec.imagePullSecrets or []]
+        config_yaml = _render_picker_config(picker.config) if picker.config else None
+        return container, config_yaml, secrets
     assert default_config_yaml is not None, "only a Unified replica falls back to the default picker configuration"
-    return _EPP_IMAGE, default_config_yaml
+    return _default_picker(), default_config_yaml, []
 
 
 def _render_picker_config(config: dict[str, Any]) -> str:
@@ -312,12 +348,12 @@ def _unified(
     # The prefix-cache producer must chunk prefixes at the engine's KV block
     # size; derive it from the first engine's flags (HACK, #179).
     block_size = _kv_block_size(_engine_args(out[base.workload_key(replica.spec.engines[0])]))
-    image, config_yaml = _picker(replica, _unified_epp_config_yaml(block_size))
+    container, config_yaml, secrets = _picker(replica, _unified_epp_config_yaml(block_size))
     selector = {base.LABEL_SERVING: base.serving_label(replica)}
     ns = base.remote_namespace(replica)
     out["inference-pool"] = base.wrap_object(provider_config, _inference_pool(name, ns, selector))
     out[base.ROUTE_KEY] = base.wrap_object(provider_config, _http_route(replica, name))
-    out.update(_epp_objects(name, ns, provider_config, image, config_yaml, replica))
+    out.update(_epp_objects(name, ns, provider_config, container, config_yaml, secrets, replica))
     return out
 
 
@@ -334,8 +370,8 @@ def _disaggregated(
     sidecar is the user's container; a decode pod without one sends every
     request to decode alone.
 
-    The picker runs the user's config: the XRD requires router: EndpointPicker
-    and serving.endpointPicker.config under PrefillDecode, and fn.py stops before
+    The picker is the user's: the XRD requires router: EndpointPicker and
+    serving.endpointPicker under PrefillDecode, and fn.py stops before
     composing a replica that lacks them (prefill_decode_routing_missing). The
     engine image must ship its KV connector's runtime, which is the user's.
     """
@@ -349,7 +385,7 @@ def _disaggregated(
     _label_role(out[prefill_key], role="prefill")
     _label_role(out[decode_key], role="decode")
 
-    image, config_yaml = _picker(replica, None)
+    container, config_yaml, secrets = _picker(replica, None)
     # Select the replica's serving pods by the serving label they already carry,
     # the same as unified. The phase (role) labels _label_role adds are for the
     # EPP's prefill/decode filters, not for pool membership.
@@ -357,7 +393,7 @@ def _disaggregated(
     ns = base.remote_namespace(replica)
     out["inference-pool"] = base.wrap_object(provider_config, _inference_pool(name, ns, selector))
     out[base.ROUTE_KEY] = base.wrap_object(provider_config, _http_route(replica, name))
-    out.update(_epp_objects(name, ns, provider_config, image, config_yaml, replica))
+    out.update(_epp_objects(name, ns, provider_config, container, config_yaml, secrets, replica))
     return out
 
 
@@ -443,15 +479,19 @@ def _epp_objects(
     name: str,
     ns: str,
     provider_config: str,
-    image: str,
-    config_yaml: str,
+    container: dict[str, Any],
+    config_yaml: str | None,
+    image_pull_secrets: list[dict],
     replica: v1alpha1.ModelReplica,
 ) -> dict[str, k8sobjv1alpha1.Object]:
     """The endpoint picker: ServiceAccount, RBAC, ConfigMap, Deployment, Service.
 
-    image and config_yaml are the picker image and the configuration it runs
-    with: the user's serving.endpointPicker, or the default for the serving
-    strategy.
+    container, config_yaml and image_pull_secrets are the picker as the user's
+    serving.endpointPicker writes it, or the default for the serving strategy.
+    Modelplane adds what only it knows to the container: the pool, as
+    environment, and where the configuration is mounted. It also adds the ports
+    every picker serves, and the readiness probe. A picker with no
+    configuration gets no ConfigMap.
     """
     epp = f"{name}-epp"
     # Only the Service needs a DNS-1035 label, and the app label a value of at
@@ -492,17 +532,55 @@ def _epp_objects(
         "subjects": [{"kind": "ServiceAccount", "name": epp, "namespace": ns}],
         "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": epp},
     }
-    config = {
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {"name": epp, "namespace": ns},
-        "data": {_EPP_CONFIG_FILE: config_yaml},
+    pool = f"{name}-pool"
+    env = [
+        {"name": _EPP_ENV_POOL_NAME, "value": pool},
+        {"name": _EPP_ENV_POOL_NAMESPACE, "value": ns},
+    ]
+    mounts: list[dict] = []
+    volumes: list[dict] = []
+    annotations: dict[str, str] = {}
+    objects: dict[str, k8sobjv1alpha1.Object] = {}
+    if config_yaml is not None:
+        env.append({"name": _EPP_ENV_CONFIG, "value": f"/config/{_EPP_CONFIG_FILE}"})
+        mounts.append({"name": "config", "mountPath": "/config"})
+        volumes.append({"name": "config", "configMap": {"name": epp}})
+        config = {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {"name": epp, "namespace": ns},
+            "data": {_EPP_CONFIG_FILE: config_yaml},
+        }
+        objects["epp-config"] = base.wrap_object(provider_config, config)
+        # The picker reads its config once at startup, and a mounted ConfigMap
+        # update doesn't re-trigger that read, so a config change alone would
+        # leave the picker on the old config. A hash of the config on the pod
+        # template rolls the Deployment instead.
+        annotations["modelplane.ai/epp-config-checksum"] = hashlib.sha256(config_yaml.encode()).hexdigest()
+    picker = {
+        **container,
+        # Modelplane's first, so the user's own environment can refer to it.
+        "env": [*env, *container.get("env", [])],
+        "ports": [
+            {"name": "grpc", "containerPort": _EPP_GRPC_PORT},
+            {"name": "grpc-health", "containerPort": _EPP_GRPC_HEALTH_PORT},
+            # Named for the collector's engine scrape job, which keeps a pod on
+            # this name.
+            {"name": base.ENGINE_PORT_NAME, "containerPort": _EPP_METRICS_PORT},
+        ],
+        # Ready once the picker has synced its pool. Without it a rollout
+        # replaces the old picker before the new one serves, and the gateway,
+        # which fails closed, rejects requests in between. No service name:
+        # the overall check, which any gRPC health server answers.
+        "readinessProbe": {"grpc": {"port": _EPP_GRPC_HEALTH_PORT}, "periodSeconds": 2},
     }
-    # The EPP reads its config once at startup and a mounted ConfigMap update
-    # doesn't re-trigger that read, so a config change alone would leave the
-    # picker on the old config. Stamp a hash of the config on the pod template so
-    # a change rolls the Deployment.
-    config_checksum = hashlib.sha256(config_yaml.encode()).hexdigest()
+    if mounts:
+        picker["volumeMounts"] = mounts
+    pod_spec: dict[str, Any] = {"serviceAccountName": epp, "containers": [picker]}
+    if volumes:
+        pod_spec["volumes"] = volumes
+    if image_pull_secrets:
+        pod_spec["imagePullSecrets"] = image_pull_secrets
     deployment = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -517,57 +595,9 @@ def _epp_objects(
                     # deployment and replica it routes for. Nothing selects on
                     # them, so they can't collide with the selector above.
                     "labels": {"app": app, **base.fleet_labels(replica, _EPP_ROLE)},
-                    "annotations": {"modelplane.ai/epp-config-checksum": config_checksum},
+                    **({"annotations": annotations} if annotations else {}),
                 },
-                "spec": {
-                    "serviceAccountName": epp,
-                    "containers": [
-                        {
-                            # compose-serving-stack's collector keeps this
-                            # container name in its engines scrape job.
-                            "name": "epp",
-                            "image": image,
-                            "args": [
-                                f"--pool-name={name}-pool",
-                                f"--pool-namespace={ns}",
-                                "--pool-group=inference.networking.k8s.io",
-                                f"--config-file=/config/{_EPP_CONFIG_FILE}",
-                                f"--grpc-port={_EPP_GRPC_PORT}",
-                                f"--grpc-health-port={_EPP_GRPC_HEALTH_PORT}",
-                                f"--metrics-port={_EPP_METRICS_PORT}",
-                                # The picker's metrics endpoint authenticates
-                                # its callers by TokenReview by default, which
-                                # needs the system:auth-delegator ClusterRole
-                                # its ServiceAccount does not hold and cannot
-                                # be given namespace-scoped. Left on, every
-                                # scrape is rejected. Off, the endpoint is
-                                # plain HTTP on the pod network, which is how
-                                # every engine already serves /metrics.
-                                #
-                                # --secure-serving is a different thing and
-                                # stays on: it is the TLS of the ext-proc gRPC
-                                # server Envoy calls, not of this.
-                                "--metrics-endpoint-auth=false",
-                            ],
-                            "ports": [
-                                {"name": "grpc", "containerPort": _EPP_GRPC_PORT},
-                                {"name": "grpc-health", "containerPort": _EPP_GRPC_HEALTH_PORT},
-                                # Named for the collector's engine scrape job,
-                                # which keeps a pod on this name.
-                                {"name": base.ENGINE_PORT_NAME, "containerPort": _EPP_METRICS_PORT},
-                            ],
-                            # Ready once the picker has synced its pool. Without
-                            # it a rollout replaces the old picker before the
-                            # new one serves, and the gateway, which fails
-                            # closed, rejects requests in between. No service
-                            # name: the overall check, which every picker on
-                            # this command line answers.
-                            "readinessProbe": {"grpc": {"port": _EPP_GRPC_HEALTH_PORT}, "periodSeconds": 2},
-                            "volumeMounts": [{"name": "config", "mountPath": "/config"}],
-                        }
-                    ],
-                    "volumes": [{"name": "config", "configMap": {"name": epp}}],
-                },
+                "spec": pod_spec,
             },
         },
     }
@@ -586,7 +616,7 @@ def _epp_objects(
         "epp-serviceaccount": base.wrap_object(provider_config, sa),
         "epp-role": base.wrap_object(provider_config, role),
         "epp-rolebinding": base.wrap_object(provider_config, binding),
-        "epp-config": base.wrap_object(provider_config, config),
+        **objects,
         # Watched, so a stalled rollout reaches the replica when it happens
         # rather than at provider-kubernetes' next resync.
         "epp": base.wrap_object(provider_config, deployment, cel_query=_EPP_AVAILABLE_CEL, watch=True),

@@ -101,57 +101,6 @@ class KvBlockSizeCase:
 
 
 @dataclasses.dataclass
-class UnifiedBlockSizeCase:
-    """A test case for the blockSizeTokens routing._unified_epp_config_yaml renders."""
-
-    name: str
-    reason: str
-    block_size: int
-    want: str
-
-
-@dataclasses.dataclass
-class PickerCase:
-    """A test case for routing._picker."""
-
-    name: str
-    reason: str
-    serving: v1alpha1.Serving | None
-    want: tuple[str, str]
-
-
-@dataclasses.dataclass
-class RoutingMissingCase:
-    """A test case for routing.prefill_decode_routing_missing."""
-
-    name: str
-    reason: str
-    serving: v1alpha1.Serving | None
-    want: bool
-
-
-@dataclasses.dataclass
-class DecodeWithoutSidecarCase:
-    """A test case for routing.decode_without_sidecar."""
-
-    name: str
-    reason: str
-    serving: v1alpha1.Serving | None
-    decode_containers: list[v1alpha1.Container]
-    want: bool
-
-
-@dataclasses.dataclass
-class RenderPickerConfigCase:
-    """A test case for routing._render_picker_config."""
-
-    name: str
-    reason: str
-    config: dict
-    want: str
-
-
-@dataclasses.dataclass
 class RemoteNamespaceCase:
     """A test case for base.remote_namespace."""
 
@@ -270,15 +219,29 @@ def _inference_pool(*, name: str, serving: str, picker: str) -> dict:
     }
 
 
-def _epp(*, name: str, app: str, pool: str, labels: dict, config_checksum: str, image: str) -> dict:
-    """The Object composing the endpoint picker's Deployment, its pod labeled and rolled by its config's checksum.
+def _epp(
+    *,
+    name: str,
+    app: str,
+    labels: dict,
+    annotations: dict | None,
+    containers: list[dict],
+    volumes: list[dict] | None,
+    image_pull_secrets: list[dict] | None,
+) -> dict:
+    """The Object composing the endpoint picker's Deployment.
 
-    The picker serves its metrics on a port named http, which the collector's
-    engine job scrapes, and with --metrics-endpoint-auth=false. By default it
-    authenticates callers by TokenReview, which needs a ClusterRole the picker's
-    namespaced ServiceAccount can't hold, so every scrape would be rejected.
-    --secure-serving stays on: it's the ext-proc gRPC server Envoy calls.
+    A picker with a config has its pod rolled by the config's checksum, in
+    annotations, and the config mounted from a volume. None omits a field.
     """
+    template_metadata: dict = {"labels": labels}
+    if annotations is not None:
+        template_metadata["annotations"] = annotations
+    pod_spec: dict = {"serviceAccountName": name, "containers": containers}
+    if volumes is not None:
+        pod_spec["volumes"] = volumes
+    if image_pull_secrets is not None:
+        pod_spec["imagePullSecrets"] = image_pull_secrets
     return {
         "spec": {
             "providerConfigRef": {"kind": "ClusterProviderConfig", "name": "cluster-a-pc"},
@@ -298,43 +261,51 @@ def _epp(*, name: str, app: str, pool: str, labels: dict, config_checksum: str, 
                     "spec": {
                         "replicas": 1,
                         "selector": {"matchLabels": {"app": app}},
-                        "template": {
-                            "metadata": {
-                                "labels": labels,
-                                "annotations": {"modelplane.ai/epp-config-checksum": config_checksum},
-                            },
-                            "spec": {
-                                "serviceAccountName": name,
-                                "containers": [
-                                    {
-                                        "name": "epp",
-                                        "image": image,
-                                        "args": [
-                                            f"--pool-name={pool}",
-                                            "--pool-namespace=mp-ml-team-51733",
-                                            "--pool-group=inference.networking.k8s.io",
-                                            "--config-file=/config/epp-config.yaml",
-                                            "--grpc-port=9002",
-                                            "--grpc-health-port=9003",
-                                            "--metrics-port=9090",
-                                            "--metrics-endpoint-auth=false",
-                                        ],
-                                        "ports": [
-                                            {"name": "grpc", "containerPort": 9002},
-                                            {"name": "grpc-health", "containerPort": 9003},
-                                            {"name": "http", "containerPort": 9090},
-                                        ],
-                                        "readinessProbe": {"grpc": {"port": 9003}, "periodSeconds": 2},
-                                        "volumeMounts": [{"name": "config", "mountPath": "/config"}],
-                                    }
-                                ],
-                                "volumes": [{"name": "config", "configMap": {"name": name}}],
-                            },
-                        },
+                        "template": {"metadata": template_metadata, "spec": pod_spec},
                     },
                 }
             },
         }
+    }
+
+
+def _llm_d_epp_container(*, pool: str) -> dict:
+    """llm-d's picker container, run with a config, as Modelplane composes it.
+
+    The default picker is this container, and so is a user's that runs llm-d's
+    picker the same way. Its command line takes the pool and the config's path
+    from the environment Modelplane sets. It serves its metrics on a port named
+    http, which the collector's engine job scrapes, and with
+    --metrics-endpoint-auth=false. By default it authenticates callers by
+    TokenReview, which needs a ClusterRole the picker's namespaced
+    ServiceAccount can't hold, so every scrape would be rejected.
+    --secure-serving stays on: it's the ext-proc gRPC server Envoy calls.
+    """
+    return {
+        "name": "epp",
+        "image": "ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
+        "args": [
+            "--pool-name=$(MODELPLANE_POOL_NAME)",
+            "--pool-namespace=$(MODELPLANE_POOL_NAMESPACE)",
+            "--pool-group=inference.networking.k8s.io",
+            "--config-file=$(MODELPLANE_PICKER_CONFIG)",
+            "--grpc-port=9002",
+            "--grpc-health-port=9003",
+            "--metrics-port=9090",
+            "--metrics-endpoint-auth=false",
+        ],
+        "env": [
+            {"name": "MODELPLANE_POOL_NAME", "value": pool},
+            {"name": "MODELPLANE_POOL_NAMESPACE", "value": "mp-ml-team-51733"},
+            {"name": "MODELPLANE_PICKER_CONFIG", "value": "/config/epp-config.yaml"},
+        ],
+        "ports": [
+            {"name": "grpc", "containerPort": 9002},
+            {"name": "grpc-health", "containerPort": 9003},
+            {"name": "http", "containerPort": 9090},
+        ],
+        "readinessProbe": {"grpc": {"port": 9003}, "periodSeconds": 2},
+        "volumeMounts": [{"name": "config", "mountPath": "/config"}],
     }
 
 
@@ -664,7 +635,7 @@ def _replica(
     """A ModelReplica."""
     return v1alpha1.ModelReplica(
         metadata=metav1.ObjectMeta(name=name, namespace=namespace, labels=labels),
-        spec=v1alpha1.SpecModel(
+        spec=v1alpha1.SpecModel1(
             clusterName=cluster_name,
             modelCacheRef=model_cache_ref,
             serving=serving,
@@ -5689,7 +5660,26 @@ APPLY_CASES = [
                 mode="PrefillDecode",
                 router="EndpointPicker",
                 endpointPicker=v1alpha1.EndpointPicker(
-                    image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
+                    template=v1alpha1.TemplateModel(
+                        spec=v1alpha1.SpecModel(
+                            containers=[
+                                v1alpha1.ContainerModel(
+                                    name="epp",
+                                    image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
+                                    args=[
+                                        "--pool-name=$(MODELPLANE_POOL_NAME)",
+                                        "--pool-namespace=$(MODELPLANE_POOL_NAMESPACE)",
+                                        "--pool-group=inference.networking.k8s.io",
+                                        "--config-file=$(MODELPLANE_PICKER_CONFIG)",
+                                        "--grpc-port=9002",
+                                        "--grpc-health-port=9003",
+                                        "--metrics-port=9090",
+                                        "--metrics-endpoint-auth=false",
+                                    ],
+                                )
+                            ]
+                        )
+                    ),
                     config={"kind": "EndpointPickerConfig"},
                 ),
             ),
@@ -5839,23 +5829,27 @@ APPLY_CASES = [
             "epp-serviceaccount": _epp_service_account(name="r-epp"),
             "epp-role": _epp_role(name="r-epp"),
             "epp-rolebinding": _epp_role_binding(name="r-epp"),
-            "epp-config": _epp_config(
-                name="r-epp", config=json.dumps({"kind": "EndpointPickerConfig"}, indent=2, sort_keys=True)
-            ),
+            "epp-config": _epp_config(name="r-epp", config='{\n  "kind": "EndpointPickerConfig"\n}'),
             "epp": _epp(
                 name="r-epp",
                 app="r-epp",
-                pool="r-pool",
                 labels={"app": "r-epp", "modelplane.ai/role": "picker"},
-                image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
-                config_checksum="a9d9c5892fd25b535b127de68f30159b3d132f91f37c4c96b9e784b358d4b842",
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "a9d9c5892fd25b535b127de68f30159b3d132f91f37c4c96b9e784b358d4b842"
+                },
+                containers=[_llm_d_epp_container(pool="r-pool")],
+                volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
+                image_pull_secrets=None,
             ),
             "epp-service": _epp_service(name="r-epp", app="r-epp"),
         },
     ),
     ApplyCase(
         name="EndpointPicker",
-        reason="serving.endpointPicker sets the picker image, and its config replaces the default configuration.",
+        reason=(
+            "serving.endpointPicker sets the picker container, and its config, rendered with sorted keys and whole "
+            "floats as ints, replaces the default configuration."
+        ),
         composed={
             "model-serving-prefill": _deployment(
                 name="r-prefill-d90b0",
@@ -5930,11 +5924,33 @@ APPLY_CASES = [
                 mode="PrefillDecode",
                 router="EndpointPicker",
                 endpointPicker=v1alpha1.EndpointPicker(
-                    image="example.com/picker:v2",
+                    template=v1alpha1.TemplateModel(
+                        spec=v1alpha1.SpecModel(
+                            containers=[
+                                v1alpha1.ContainerModel(
+                                    name="epp",
+                                    image="example.com/picker:v2",
+                                    args=[
+                                        "--pool-name=$(MODELPLANE_POOL_NAME)",
+                                        "--pool-namespace=$(MODELPLANE_POOL_NAMESPACE)",
+                                        "--config-file=$(MODELPLANE_PICKER_CONFIG)",
+                                    ],
+                                )
+                            ]
+                        )
+                    ),
+                    # Keys out of order at every level, and whole floats, as a
+                    # config arrives through a protobuf Struct.
                     config={
-                        "apiVersion": "llm-d.ai/v1alpha1",
                         "kind": "EndpointPickerConfig",
-                        "plugins": [{"type": "always-disagg-pd-decider"}],
+                        "apiVersion": "llm-d.ai/v1alpha1",
+                        "plugins": [
+                            {"type": "prefix-based-pd-decider", "parameters": {"nonCachedTokens": 16.0}},
+                            {"parameters": {"blockSizeTokens": 64.0, "autoTune": False}, "type": "prefix-cache-scorer"},
+                        ],
+                        "schedulingProfiles": [
+                            {"plugins": [{"weight": 0.25, "pluginRef": "queue-scorer"}], "name": "decode"}
+                        ],
                     },
                 ),
             ),
@@ -6084,26 +6100,77 @@ APPLY_CASES = [
             "epp-serviceaccount": _epp_service_account(name="r-epp"),
             "epp-role": _epp_role(name="r-epp"),
             "epp-rolebinding": _epp_role_binding(name="r-epp"),
-            # A user config is rendered as JSON, which is YAML, in the order the user wrote it.
+            # A user config renders as JSON, which is YAML, with its keys sorted
+            # and its whole floats as ints, so the rendering and its checksum
+            # are the same every run and the picker reads 64 where it wants an
+            # int.
             "epp-config": _epp_config(
                 name="r-epp",
-                config=json.dumps(
-                    {
-                        "apiVersion": "llm-d.ai/v1alpha1",
-                        "kind": "EndpointPickerConfig",
-                        "plugins": [{"type": "always-disagg-pd-decider"}],
-                    },
-                    indent=2,
-                    sort_keys=True,
+                config=(
+                    "{\n"
+                    '  "apiVersion": "llm-d.ai/v1alpha1",\n'
+                    '  "kind": "EndpointPickerConfig",\n'
+                    '  "plugins": [\n'
+                    "    {\n"
+                    '      "parameters": {\n'
+                    '        "nonCachedTokens": 16\n'
+                    "      },\n"
+                    '      "type": "prefix-based-pd-decider"\n'
+                    "    },\n"
+                    "    {\n"
+                    '      "parameters": {\n'
+                    '        "autoTune": false,\n'
+                    '        "blockSizeTokens": 64\n'
+                    "      },\n"
+                    '      "type": "prefix-cache-scorer"\n'
+                    "    }\n"
+                    "  ],\n"
+                    '  "schedulingProfiles": [\n'
+                    "    {\n"
+                    '      "name": "decode",\n'
+                    '      "plugins": [\n'
+                    "        {\n"
+                    '          "pluginRef": "queue-scorer",\n'
+                    '          "weight": 0.25\n'
+                    "        }\n"
+                    "      ]\n"
+                    "    }\n"
+                    "  ]\n"
+                    "}"
                 ),
             ),
             "epp": _epp(
                 name="r-epp",
                 app="r-epp",
-                pool="r-pool",
                 labels={"app": "r-epp", "modelplane.ai/role": "picker"},
-                config_checksum="b556a38fb374352df960ae5caa04221c7dde46ca6fe483ad6869b7ef2db0dd75",
-                image="example.com/picker:v2",
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "270cf06d0aae129a190fd927f416a786033a4343b02cedd4801c27459e0de1c7"
+                },
+                containers=[
+                    {
+                        "name": "epp",
+                        "image": "example.com/picker:v2",
+                        "args": [
+                            "--pool-name=$(MODELPLANE_POOL_NAME)",
+                            "--pool-namespace=$(MODELPLANE_POOL_NAMESPACE)",
+                            "--config-file=$(MODELPLANE_PICKER_CONFIG)",
+                        ],
+                        "env": [
+                            {"name": "MODELPLANE_POOL_NAME", "value": "r-pool"},
+                            {"name": "MODELPLANE_POOL_NAMESPACE", "value": "mp-ml-team-51733"},
+                            {"name": "MODELPLANE_PICKER_CONFIG", "value": "/config/epp-config.yaml"},
+                        ],
+                        "ports": [
+                            {"name": "grpc", "containerPort": 9002},
+                            {"name": "grpc-health", "containerPort": 9003},
+                            {"name": "http", "containerPort": 9090},
+                        ],
+                        "readinessProbe": {"grpc": {"port": 9003}, "periodSeconds": 2},
+                        "volumeMounts": [{"name": "config", "mountPath": "/config"}],
+                    }
+                ],
+                volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
+                image_pull_secrets=None,
             ),
             "epp-service": _epp_service(name="r-epp", app="r-epp"),
         },
@@ -6188,7 +6255,26 @@ APPLY_CASES = [
                 mode="PrefillDecode",
                 router="EndpointPicker",
                 endpointPicker=v1alpha1.EndpointPicker(
-                    image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
+                    template=v1alpha1.TemplateModel(
+                        spec=v1alpha1.SpecModel(
+                            containers=[
+                                v1alpha1.ContainerModel(
+                                    name="epp",
+                                    image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
+                                    args=[
+                                        "--pool-name=$(MODELPLANE_POOL_NAME)",
+                                        "--pool-namespace=$(MODELPLANE_POOL_NAMESPACE)",
+                                        "--pool-group=inference.networking.k8s.io",
+                                        "--config-file=$(MODELPLANE_PICKER_CONFIG)",
+                                        "--grpc-port=9002",
+                                        "--grpc-health-port=9003",
+                                        "--metrics-port=9090",
+                                        "--metrics-endpoint-auth=false",
+                                    ],
+                                )
+                            ]
+                        )
+                    ),
                     config={"kind": "EndpointPickerConfig"},
                 ),
             ),
@@ -6338,16 +6424,17 @@ APPLY_CASES = [
             "epp-serviceaccount": _epp_service_account(name="r-epp"),
             "epp-role": _epp_role(name="r-epp"),
             "epp-rolebinding": _epp_role_binding(name="r-epp"),
-            "epp-config": _epp_config(
-                name="r-epp", config=json.dumps({"kind": "EndpointPickerConfig"}, indent=2, sort_keys=True)
-            ),
+            "epp-config": _epp_config(name="r-epp", config='{\n  "kind": "EndpointPickerConfig"\n}'),
             "epp": _epp(
                 name="r-epp",
                 app="r-epp",
-                pool="r-pool",
                 labels={"app": "r-epp", "modelplane.ai/role": "picker"},
-                image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
-                config_checksum="a9d9c5892fd25b535b127de68f30159b3d132f91f37c4c96b9e784b358d4b842",
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "a9d9c5892fd25b535b127de68f30159b3d132f91f37c4c96b9e784b358d4b842"
+                },
+                containers=[_llm_d_epp_container(pool="r-pool")],
+                volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
+                image_pull_secrets=None,
             ),
             "epp-service": _epp_service(name="r-epp", app="r-epp"),
         },
@@ -6519,7 +6606,26 @@ APPLY_CASES = [
                 mode="PrefillDecode",
                 router="EndpointPicker",
                 endpointPicker=v1alpha1.EndpointPicker(
-                    image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
+                    template=v1alpha1.TemplateModel(
+                        spec=v1alpha1.SpecModel(
+                            containers=[
+                                v1alpha1.ContainerModel(
+                                    name="epp",
+                                    image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
+                                    args=[
+                                        "--pool-name=$(MODELPLANE_POOL_NAME)",
+                                        "--pool-namespace=$(MODELPLANE_POOL_NAMESPACE)",
+                                        "--pool-group=inference.networking.k8s.io",
+                                        "--config-file=$(MODELPLANE_PICKER_CONFIG)",
+                                        "--grpc-port=9002",
+                                        "--grpc-health-port=9003",
+                                        "--metrics-port=9090",
+                                        "--metrics-endpoint-auth=false",
+                                    ],
+                                )
+                            ]
+                        )
+                    ),
                     config={"kind": "EndpointPickerConfig"},
                 ),
             ),
@@ -6790,16 +6896,17 @@ APPLY_CASES = [
             "epp-serviceaccount": _epp_service_account(name="r-epp"),
             "epp-role": _epp_role(name="r-epp"),
             "epp-rolebinding": _epp_role_binding(name="r-epp"),
-            "epp-config": _epp_config(
-                name="r-epp", config=json.dumps({"kind": "EndpointPickerConfig"}, indent=2, sort_keys=True)
-            ),
+            "epp-config": _epp_config(name="r-epp", config='{\n  "kind": "EndpointPickerConfig"\n}'),
             "epp": _epp(
                 name="r-epp",
                 app="r-epp",
-                pool="r-pool",
                 labels={"app": "r-epp", "modelplane.ai/role": "picker"},
-                image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
-                config_checksum="a9d9c5892fd25b535b127de68f30159b3d132f91f37c4c96b9e784b358d4b842",
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "a9d9c5892fd25b535b127de68f30159b3d132f91f37c4c96b9e784b358d4b842"
+                },
+                containers=[_llm_d_epp_container(pool="r-pool")],
+                volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
+                image_pull_secrets=None,
             ),
             "epp-service": _epp_service(name="r-epp", app="r-epp"),
         },
@@ -6962,10 +7069,539 @@ APPLY_CASES = [
             "epp": _epp(
                 name="r-epp",
                 app="r-epp",
-                pool="r-pool",
                 labels={"app": "r-epp", "modelplane.ai/role": "picker"},
-                image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
-                config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
+                },
+                containers=[_llm_d_epp_container(pool="r-pool")],
+                volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
+                image_pull_secrets=None,
+            ),
+            "epp-service": _epp_service(name="r-epp", app="r-epp"),
+        },
+    ),
+    ApplyCase(
+        name="UnifiedLargeBlockSize",
+        reason="An engine block size above 64 sets the default picker configuration's blockSizeTokens.",
+        composed={
+            "model-serving-main": _deployment(
+                name="r-main-bb4e3",
+                claim_template_name="r-main-standalone-devices-f456f",
+                replicas=1,
+                pod_metadata={
+                    "labels": {
+                        "modelplane.ai/engine": "main",
+                        "modelplane.ai/role": "Standalone",
+                        "modelplane.ai/serving": "r",
+                        "modelplane.ai/workload": "r-main-bb4e3",
+                    }
+                },
+                containers=[
+                    {
+                        "name": "engine",
+                        "image": "vllm/vllm-openai:latest",
+                        "args": ["--model=Qwen/Qwen3-0.6B", "--block-size", "128"],
+                        "ports": [{"name": "http", "containerPort": 8000}],
+                        "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
+                        "readinessProbe": {
+                            "httpGet": {"path": "/health", "port": 8000},
+                            "initialDelaySeconds": 30,
+                            "periodSeconds": 10,
+                            "timeoutSeconds": 5,
+                        },
+                        "resources": {"claims": [{"name": "devices"}]},
+                    }
+                ],
+                volumes=[{"name": "dshm", "emptyDir": {"medium": "Memory"}}],
+            ),
+            "resource-claim-main-standalone": _claim_template(name="r-main-standalone-devices-f456f", count=1),
+        },
+        replica=_replica(
+            name="r",
+            namespace="ml-team",
+            cluster_name="cluster-a",
+            labels=None,
+            model_cache_ref=None,
+            serving=None,
+            engines=[
+                v1alpha1.Engine(
+                    name="main",
+                    copies=1,
+                    members=[
+                        v1alpha1.Member(
+                            role="Standalone",
+                            nodePoolName="frontier",
+                            deviceRequests=[
+                                v1alpha1.DeviceRequest(
+                                    name="gpu",
+                                    deviceClassName="gpu.nvidia.com",
+                                    count=1,
+                                    selectors=[
+                                        v1alpha1.Selector(
+                                            cel='device.capacity["gpu.nvidia.com"].memory.compareTo(quantity("80Gi")) >= 0'
+                                        )
+                                    ],
+                                )
+                            ],
+                            template=v1alpha1.Template(
+                                spec=v1alpha1.Spec(
+                                    containers=[
+                                        v1alpha1.Container(
+                                            name="engine",
+                                            image="vllm/vllm-openai:latest",
+                                            args=["--model=Qwen/Qwen3-0.6B", "--block-size", "128"],
+                                        )
+                                    ]
+                                )
+                            ),
+                        )
+                    ],
+                )
+            ],
+        ),
+        provider_config="cluster-a-pc",
+        want={
+            "model-serving-main": _deployment(
+                name="r-main-bb4e3",
+                claim_template_name="r-main-standalone-devices-f456f",
+                replicas=1,
+                pod_metadata={
+                    "labels": {
+                        "modelplane.ai/engine": "main",
+                        "modelplane.ai/role": "Standalone",
+                        "modelplane.ai/serving": "r",
+                        "modelplane.ai/workload": "r-main-bb4e3",
+                    }
+                },
+                containers=[
+                    {
+                        "name": "engine",
+                        "image": "vllm/vllm-openai:latest",
+                        "args": ["--model=Qwen/Qwen3-0.6B", "--block-size", "128"],
+                        "ports": [{"name": "http", "containerPort": 8000}],
+                        "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
+                        "readinessProbe": {
+                            "httpGet": {"path": "/health", "port": 8000},
+                            "initialDelaySeconds": 30,
+                            "periodSeconds": 10,
+                            "timeoutSeconds": 5,
+                        },
+                        "resources": {"claims": [{"name": "devices"}]},
+                    }
+                ],
+                volumes=[{"name": "dshm", "emptyDir": {"medium": "Memory"}}],
+            ),
+            "resource-claim-main-standalone": _claim_template(name="r-main-standalone-devices-f456f", count=1),
+            "inference-pool": _inference_pool(name="r-pool", serving="r", picker="r-epp"),
+            "model-route": _route(name="r", path="/ml-team/r/", pool="r-pool"),
+            "epp-serviceaccount": _epp_service_account(name="r-epp"),
+            "epp-role": _epp_role(name="r-epp"),
+            "epp-rolebinding": _epp_role_binding(name="r-epp"),
+            "epp-config": _epp_config(
+                name="r-epp",
+                config="apiVersion: llm-d.ai/v1alpha1\n"
+                "kind: EndpointPickerConfig\n"
+                "plugins:\n"
+                "- type: approx-prefix-cache-producer\n"
+                "  parameters:\n"
+                "    autoTune: false\n"
+                "    blockSizeTokens: 128\n"
+                "    maxPrefixBlocksToMatch: 256\n"
+                "    lruCapacityPerServer: 31250\n"
+                "- type: prefix-cache-scorer\n"
+                "- type: queue-scorer\n"
+                "- type: max-score-picker\n"
+                "schedulingProfiles:\n"
+                "- name: default\n"
+                "  plugins:\n"
+                "  - pluginRef: max-score-picker\n"
+                "  - pluginRef: prefix-cache-scorer\n"
+                "    weight: 2\n"
+                "  - pluginRef: queue-scorer\n"
+                "    weight: 1\n",
+            ),
+            "epp": _epp(
+                name="r-epp",
+                app="r-epp",
+                labels={"app": "r-epp", "modelplane.ai/role": "picker"},
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "6d541823f691c0fad7e169bf03c3b7b14b766dc3e795deaae7050c11eeea6eab"
+                },
+                containers=[_llm_d_epp_container(pool="r-pool")],
+                volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
+                image_pull_secrets=None,
+            ),
+            "epp-service": _epp_service(name="r-epp", app="r-epp"),
+        },
+    ),
+    ApplyCase(
+        name="UnifiedEndpointPicker",
+        reason=(
+            "A Unified replica with router EndpointPicker runs its own picker container, config and image pull "
+            "secrets, with Modelplane's environment, ports, probe and config mount added."
+        ),
+        composed={
+            "model-serving-main": _deployment(
+                name="r-main-bb4e3",
+                claim_template_name="r-main-standalone-devices-f456f",
+                replicas=1,
+                pod_metadata={
+                    "labels": {
+                        "modelplane.ai/engine": "main",
+                        "modelplane.ai/role": "Standalone",
+                        "modelplane.ai/serving": "r",
+                        "modelplane.ai/workload": "r-main-bb4e3",
+                    }
+                },
+                containers=[
+                    {
+                        "name": "engine",
+                        "image": "vllm/vllm-openai:latest",
+                        "args": ["--model=Qwen/Qwen3-0.6B"],
+                        "ports": [{"name": "http", "containerPort": 8000}],
+                        "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
+                        "readinessProbe": {
+                            "httpGet": {"path": "/health", "port": 8000},
+                            "initialDelaySeconds": 30,
+                            "periodSeconds": 10,
+                            "timeoutSeconds": 5,
+                        },
+                        "resources": {"claims": [{"name": "devices"}]},
+                    }
+                ],
+                volumes=[{"name": "dshm", "emptyDir": {"medium": "Memory"}}],
+            ),
+            "resource-claim-main-standalone": _claim_template(name="r-main-standalone-devices-f456f", count=1),
+        },
+        replica=_replica(
+            name="r",
+            namespace="ml-team",
+            cluster_name="cluster-a",
+            labels=None,
+            model_cache_ref=None,
+            serving=v1alpha1.Serving(
+                mode="Unified",
+                router="EndpointPicker",
+                endpointPicker=v1alpha1.EndpointPicker(
+                    template=v1alpha1.TemplateModel(
+                        spec=v1alpha1.SpecModel(
+                            containers=[
+                                v1alpha1.ContainerModel(
+                                    name="epp",
+                                    image="registry.example.com/picker:v1",
+                                    args=[
+                                        "--pool-name=$(MODELPLANE_POOL_NAME)",
+                                        "--pool-namespace=$(MODELPLANE_POOL_NAMESPACE)",
+                                        "--config-file=$(MODELPLANE_PICKER_CONFIG)",
+                                        "--v=$(LOG_VERBOSITY)",
+                                    ],
+                                    env=[v1alpha1.EnvItem(name="LOG_VERBOSITY", value="3")],
+                                    resources=v1alpha1.Resources(
+                                        requests={"cpu": "500m", "memory": "1Gi"}, limits={"memory": "2Gi"}
+                                    ),
+                                )
+                            ],
+                            imagePullSecrets=[v1alpha1.ImagePullSecret(name="registry-credentials")],
+                        )
+                    ),
+                    config={
+                        "apiVersion": "llm-d.ai/v1alpha1",
+                        "kind": "EndpointPickerConfig",
+                        "plugins": [{"type": "queue-scorer"}, {"type": "max-score-picker"}],
+                    },
+                ),
+            ),
+            engines=[
+                v1alpha1.Engine(
+                    name="main",
+                    copies=1,
+                    members=[
+                        v1alpha1.Member(
+                            role="Standalone",
+                            nodePoolName="frontier",
+                            deviceRequests=[
+                                v1alpha1.DeviceRequest(
+                                    name="gpu",
+                                    deviceClassName="gpu.nvidia.com",
+                                    count=1,
+                                    selectors=[
+                                        v1alpha1.Selector(
+                                            cel='device.capacity["gpu.nvidia.com"].memory.compareTo(quantity("80Gi")) >= 0'
+                                        )
+                                    ],
+                                )
+                            ],
+                            template=v1alpha1.Template(
+                                spec=v1alpha1.Spec(
+                                    containers=[
+                                        v1alpha1.Container(
+                                            name="engine",
+                                            image="vllm/vllm-openai:latest",
+                                            args=["--model=Qwen/Qwen3-0.6B"],
+                                        )
+                                    ]
+                                )
+                            ),
+                        )
+                    ],
+                )
+            ],
+        ),
+        provider_config="cluster-a-pc",
+        want={
+            "model-serving-main": _deployment(
+                name="r-main-bb4e3",
+                claim_template_name="r-main-standalone-devices-f456f",
+                replicas=1,
+                pod_metadata={
+                    "labels": {
+                        "modelplane.ai/engine": "main",
+                        "modelplane.ai/role": "Standalone",
+                        "modelplane.ai/serving": "r",
+                        "modelplane.ai/workload": "r-main-bb4e3",
+                    }
+                },
+                containers=[
+                    {
+                        "name": "engine",
+                        "image": "vllm/vllm-openai:latest",
+                        "args": ["--model=Qwen/Qwen3-0.6B"],
+                        "ports": [{"name": "http", "containerPort": 8000}],
+                        "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
+                        "readinessProbe": {
+                            "httpGet": {"path": "/health", "port": 8000},
+                            "initialDelaySeconds": 30,
+                            "periodSeconds": 10,
+                            "timeoutSeconds": 5,
+                        },
+                        "resources": {"claims": [{"name": "devices"}]},
+                    }
+                ],
+                volumes=[{"name": "dshm", "emptyDir": {"medium": "Memory"}}],
+            ),
+            "resource-claim-main-standalone": _claim_template(name="r-main-standalone-devices-f456f", count=1),
+            "inference-pool": _inference_pool(name="r-pool", serving="r", picker="r-epp"),
+            "model-route": _route(name="r", path="/ml-team/r/", pool="r-pool"),
+            "epp-serviceaccount": _epp_service_account(name="r-epp"),
+            "epp-role": _epp_role(name="r-epp"),
+            "epp-rolebinding": _epp_role_binding(name="r-epp"),
+            "epp-config": _epp_config(
+                name="r-epp",
+                config=(
+                    "{\n"
+                    '  "apiVersion": "llm-d.ai/v1alpha1",\n'
+                    '  "kind": "EndpointPickerConfig",\n'
+                    '  "plugins": [\n'
+                    "    {\n"
+                    '      "type": "queue-scorer"\n'
+                    "    },\n"
+                    "    {\n"
+                    '      "type": "max-score-picker"\n'
+                    "    }\n"
+                    "  ]\n"
+                    "}"
+                ),
+            ),
+            "epp": _epp(
+                name="r-epp",
+                app="r-epp",
+                labels={"app": "r-epp", "modelplane.ai/role": "picker"},
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "798d9c4de3c100a35386714c7a2eeb249fde9cadee9ca70d51461a3a8c43a046"
+                },
+                containers=[
+                    {
+                        "name": "epp",
+                        "image": "registry.example.com/picker:v1",
+                        "args": [
+                            "--pool-name=$(MODELPLANE_POOL_NAME)",
+                            "--pool-namespace=$(MODELPLANE_POOL_NAMESPACE)",
+                            "--config-file=$(MODELPLANE_PICKER_CONFIG)",
+                            "--v=$(LOG_VERBOSITY)",
+                        ],
+                        # Modelplane's environment first, so the user's can
+                        # refer to it.
+                        "env": [
+                            {"name": "MODELPLANE_POOL_NAME", "value": "r-pool"},
+                            {"name": "MODELPLANE_POOL_NAMESPACE", "value": "mp-ml-team-51733"},
+                            {"name": "MODELPLANE_PICKER_CONFIG", "value": "/config/epp-config.yaml"},
+                            {"name": "LOG_VERBOSITY", "value": "3"},
+                        ],
+                        "resources": {"requests": {"cpu": "500m", "memory": "1Gi"}, "limits": {"memory": "2Gi"}},
+                        "ports": [
+                            {"name": "grpc", "containerPort": 9002},
+                            {"name": "grpc-health", "containerPort": 9003},
+                            {"name": "http", "containerPort": 9090},
+                        ],
+                        "readinessProbe": {"grpc": {"port": 9003}, "periodSeconds": 2},
+                        "volumeMounts": [{"name": "config", "mountPath": "/config"}],
+                    }
+                ],
+                volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
+                image_pull_secrets=[{"name": "registry-credentials"}],
+            ),
+            "epp-service": _epp_service(name="r-epp", app="r-epp"),
+        },
+    ),
+    ApplyCase(
+        name="PickerWithoutConfig",
+        reason=(
+            "A picker that sets no config gets no ConfigMap, config mount, config environment or checksum annotation."
+        ),
+        composed={
+            "model-serving-main": _deployment(
+                name="r-main-bb4e3",
+                claim_template_name="r-main-standalone-devices-f456f",
+                replicas=1,
+                pod_metadata={
+                    "labels": {
+                        "modelplane.ai/engine": "main",
+                        "modelplane.ai/role": "Standalone",
+                        "modelplane.ai/serving": "r",
+                        "modelplane.ai/workload": "r-main-bb4e3",
+                    }
+                },
+                containers=[
+                    {
+                        "name": "engine",
+                        "image": "vllm/vllm-openai:latest",
+                        "args": ["--model=Qwen/Qwen3-0.6B"],
+                        "ports": [{"name": "http", "containerPort": 8000}],
+                        "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
+                        "readinessProbe": {
+                            "httpGet": {"path": "/health", "port": 8000},
+                            "initialDelaySeconds": 30,
+                            "periodSeconds": 10,
+                            "timeoutSeconds": 5,
+                        },
+                        "resources": {"claims": [{"name": "devices"}]},
+                    }
+                ],
+                volumes=[{"name": "dshm", "emptyDir": {"medium": "Memory"}}],
+            ),
+            "resource-claim-main-standalone": _claim_template(name="r-main-standalone-devices-f456f", count=1),
+        },
+        replica=_replica(
+            name="r",
+            namespace="ml-team",
+            cluster_name="cluster-a",
+            labels=None,
+            model_cache_ref=None,
+            serving=v1alpha1.Serving(
+                mode="Unified",
+                router="EndpointPicker",
+                endpointPicker=v1alpha1.EndpointPicker(
+                    template=v1alpha1.TemplateModel(
+                        spec=v1alpha1.SpecModel(
+                            containers=[
+                                v1alpha1.ContainerModel(
+                                    name="epp",
+                                    image="registry.example.com/round-robin-picker:v1",
+                                    args=["--pool=$(MODELPLANE_POOL_NAME)", "--namespace=$(MODELPLANE_POOL_NAMESPACE)"],
+                                )
+                            ]
+                        )
+                    ),
+                ),
+            ),
+            engines=[
+                v1alpha1.Engine(
+                    name="main",
+                    copies=1,
+                    members=[
+                        v1alpha1.Member(
+                            role="Standalone",
+                            nodePoolName="frontier",
+                            deviceRequests=[
+                                v1alpha1.DeviceRequest(
+                                    name="gpu",
+                                    deviceClassName="gpu.nvidia.com",
+                                    count=1,
+                                    selectors=[
+                                        v1alpha1.Selector(
+                                            cel='device.capacity["gpu.nvidia.com"].memory.compareTo(quantity("80Gi")) >= 0'
+                                        )
+                                    ],
+                                )
+                            ],
+                            template=v1alpha1.Template(
+                                spec=v1alpha1.Spec(
+                                    containers=[
+                                        v1alpha1.Container(
+                                            name="engine",
+                                            image="vllm/vllm-openai:latest",
+                                            args=["--model=Qwen/Qwen3-0.6B"],
+                                        )
+                                    ]
+                                )
+                            ),
+                        )
+                    ],
+                )
+            ],
+        ),
+        provider_config="cluster-a-pc",
+        want={
+            "model-serving-main": _deployment(
+                name="r-main-bb4e3",
+                claim_template_name="r-main-standalone-devices-f456f",
+                replicas=1,
+                pod_metadata={
+                    "labels": {
+                        "modelplane.ai/engine": "main",
+                        "modelplane.ai/role": "Standalone",
+                        "modelplane.ai/serving": "r",
+                        "modelplane.ai/workload": "r-main-bb4e3",
+                    }
+                },
+                containers=[
+                    {
+                        "name": "engine",
+                        "image": "vllm/vllm-openai:latest",
+                        "args": ["--model=Qwen/Qwen3-0.6B"],
+                        "ports": [{"name": "http", "containerPort": 8000}],
+                        "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
+                        "readinessProbe": {
+                            "httpGet": {"path": "/health", "port": 8000},
+                            "initialDelaySeconds": 30,
+                            "periodSeconds": 10,
+                            "timeoutSeconds": 5,
+                        },
+                        "resources": {"claims": [{"name": "devices"}]},
+                    }
+                ],
+                volumes=[{"name": "dshm", "emptyDir": {"medium": "Memory"}}],
+            ),
+            "resource-claim-main-standalone": _claim_template(name="r-main-standalone-devices-f456f", count=1),
+            "inference-pool": _inference_pool(name="r-pool", serving="r", picker="r-epp"),
+            "model-route": _route(name="r", path="/ml-team/r/", pool="r-pool"),
+            "epp-serviceaccount": _epp_service_account(name="r-epp"),
+            "epp-role": _epp_role(name="r-epp"),
+            "epp-rolebinding": _epp_role_binding(name="r-epp"),
+            "epp": _epp(
+                name="r-epp",
+                app="r-epp",
+                labels={"app": "r-epp", "modelplane.ai/role": "picker"},
+                annotations=None,
+                containers=[
+                    {
+                        "name": "epp",
+                        "image": "registry.example.com/round-robin-picker:v1",
+                        "args": ["--pool=$(MODELPLANE_POOL_NAME)", "--namespace=$(MODELPLANE_POOL_NAMESPACE)"],
+                        "env": [
+                            {"name": "MODELPLANE_POOL_NAME", "value": "r-pool"},
+                            {"name": "MODELPLANE_POOL_NAMESPACE", "value": "mp-ml-team-51733"},
+                        ],
+                        "ports": [
+                            {"name": "grpc", "containerPort": 9002},
+                            {"name": "grpc-health", "containerPort": 9003},
+                            {"name": "http", "containerPort": 9090},
+                        ],
+                        "readinessProbe": {"grpc": {"port": 9003}, "periodSeconds": 2},
+                    }
+                ],
+                volumes=None,
+                image_pull_secrets=None,
             ),
             "epp-service": _epp_service(name="r-epp", app="r-epp"),
         },
@@ -7123,15 +7759,18 @@ APPLY_CASES = [
             "epp": _epp(
                 name="r-epp",
                 app="r-epp",
-                pool="r-pool",
                 labels={
                     "app": "r-epp",
                     "modelplane.ai/role": "picker",
                     "modelplane.ai/deployment": "qwen3-8b",
                     "modelplane.ai/replica": "2",
                 },
-                image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
-                config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
+                },
+                containers=[_llm_d_epp_container(pool="r-pool")],
+                volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
+                image_pull_secrets=None,
             ),
             "epp-service": _epp_service(name="r-epp", app="r-epp"),
         },
@@ -7281,10 +7920,13 @@ APPLY_CASES = [
             "epp": _epp(
                 name="r-epp",
                 app="r-epp",
-                pool="r-pool",
                 labels={"app": "r-epp", "modelplane.ai/role": "picker"},
-                image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
-                config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
+                },
+                containers=[_llm_d_epp_container(pool="r-pool")],
+                volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
+                image_pull_secrets=None,
             ),
             "epp-service": _epp_service(name="r-epp", app="r-epp"),
         },
@@ -7530,10 +8172,13 @@ APPLY_CASES = [
             "epp": _epp(
                 name="r-epp",
                 app="r-epp",
-                pool="r-pool",
                 labels={"app": "r-epp", "modelplane.ai/role": "picker"},
-                image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
-                config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
+                },
+                containers=[_llm_d_epp_container(pool="r-pool")],
+                volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
+                image_pull_secrets=None,
             ),
             "epp-service": _epp_service(name="r-epp", app="r-epp"),
         },
@@ -7696,10 +8341,13 @@ APPLY_CASES = [
             "epp": _epp(
                 name="qwen2.5-7b-abcde-epp",
                 app="qwen2.5-7b-abcde-epp",
-                pool="qwen2.5-7b-abcde-pool",
                 labels={"app": "qwen2.5-7b-abcde-epp", "modelplane.ai/role": "picker"},
-                image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
-                config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
+                },
+                containers=[_llm_d_epp_container(pool="qwen2.5-7b-abcde-pool")],
+                volumes=[{"name": "config", "configMap": {"name": "qwen2.5-7b-abcde-epp"}}],
+                image_pull_secrets=None,
             ),
             "epp-service": _epp_service(name="epp-qwen2-5-7b-abcde-epp-da596", app="qwen2.5-7b-abcde-epp"),
         },
@@ -7858,10 +8506,13 @@ APPLY_CASES = [
             "epp": _epp(
                 name="a" * 57 + "-abcde-epp",
                 app="epp-" + "a" * 53 + "-2dd65",
-                pool="a" * 57 + "-abcde-pool",
                 labels={"app": "epp-" + "a" * 53 + "-2dd65", "modelplane.ai/role": "picker"},
-                image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
-                config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
+                },
+                containers=[_llm_d_epp_container(pool="a" * 57 + "-abcde-pool")],
+                volumes=[{"name": "config", "configMap": {"name": "a" * 57 + "-abcde-epp"}}],
+                image_pull_secrets=None,
             ),
             "epp-service": _epp_service(name="epp-" + "a" * 53 + "-2dd65", app="epp-" + "a" * 53 + "-2dd65"),
         },
@@ -7923,274 +8574,6 @@ KV_BLOCK_SIZE_CASES = [
 def test_kv_block_size(case: KvBlockSizeCase) -> None:
     """The KV block size comes from the engine's flags."""
     assert routing._kv_block_size(case.engine_args) == case.want, case.reason
-
-
-UNIFIED_BLOCK_SIZE_CASES = [
-    UnifiedBlockSizeCase(
-        name="BelowMinimum",
-        reason="A block size below 64 renders as 64, the smallest the picker uses.",
-        block_size=16,
-        want="    blockSizeTokens: 64\n",
-    ),
-    UnifiedBlockSizeCase(
-        name="AtMinimum",
-        reason="A block size of 64 renders as is.",
-        block_size=64,
-        want="    blockSizeTokens: 64\n",
-    ),
-    UnifiedBlockSizeCase(
-        name="AboveMinimum",
-        reason="A block size above 64 renders as is.",
-        block_size=128,
-        want="    blockSizeTokens: 128\n",
-    ),
-]
-
-
-@pytest.mark.parametrize("case", UNIFIED_BLOCK_SIZE_CASES, ids=lambda case: case.name)
-def test_unified_block_size(case: UnifiedBlockSizeCase) -> None:
-    """The unified config's blockSizeTokens is the engine's block size, at least 64."""
-    assert case.want in routing._unified_epp_config_yaml(case.block_size), case.reason
-
-
-PICKER_CASES = [
-    PickerCase(
-        name="NoServing",
-        reason="A replica with no serving block runs the default picker image and configuration.",
-        serving=None,
-        want=("ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0", "default"),
-    ),
-    PickerCase(
-        name="ImageAndConfig",
-        reason="An endpointPicker with an image and a config runs both, the config replacing the default.",
-        serving=v1alpha1.Serving(
-            mode="Unified",
-            router="EndpointPicker",
-            endpointPicker=v1alpha1.EndpointPicker(image="example.com/picker:v2", config={"kind": "K"}),
-        ),
-        want=("example.com/picker:v2", '{\n  "kind": "K"\n}'),
-    ),
-    PickerCase(
-        name="RouterWithoutPicker",
-        reason="A Unified replica with a router but no endpointPicker, which the XRD rejects, runs the defaults.",
-        serving=v1alpha1.Serving(mode="Unified", router="EndpointPicker"),
-        want=("ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0", "default"),
-    ),
-]
-
-
-@pytest.mark.parametrize("case", PICKER_CASES, ids=lambda case: case.name)
-def test_picker(case: PickerCase) -> None:
-    """The picker runs the user's image and config where set, and the defaults otherwise."""
-    replica = _replica(
-        name="r",
-        namespace="ml-team",
-        cluster_name="cluster-a",
-        labels=None,
-        model_cache_ref=None,
-        serving=case.serving,
-        engines=[
-            v1alpha1.Engine(
-                name="main",
-                members=[
-                    v1alpha1.Member(
-                        role="Standalone",
-                        nodePoolName="frontier",
-                        template=v1alpha1.Template(
-                            spec=v1alpha1.Spec(containers=[v1alpha1.Container(name="engine", image="e")])
-                        ),
-                    )
-                ],
-            )
-        ],
-    )
-    assert routing._picker(replica, "default") == case.want, case.reason
-
-
-ROUTING_MISSING_CASES = [
-    RoutingMissingCase(
-        name="Unified",
-        reason="A Unified replica needs no routing of its own.",
-        serving=v1alpha1.Serving(mode="Unified"),
-        want=False,
-    ),
-    RoutingMissingCase(
-        name="PrefillDecodeWithRouting",
-        reason="A PrefillDecode replica with a router and a picker config has its routing.",
-        serving=v1alpha1.Serving(
-            mode="PrefillDecode",
-            router="EndpointPicker",
-            endpointPicker=v1alpha1.EndpointPicker(image="example.com/picker:v2", config={"kind": "K"}),
-        ),
-        want=False,
-    ),
-    RoutingMissingCase(
-        name="PrefillDecodeStored",
-        reason="A PrefillDecode replica without router or picker config lacks its routing.",
-        serving=v1alpha1.Serving(mode="PrefillDecode"),
-        want=True,
-    ),
-    RoutingMissingCase(
-        name="PrefillDecodeNoPicker",
-        reason="A PrefillDecode replica with a router but no endpointPicker lacks its routing.",
-        serving=v1alpha1.Serving(mode="PrefillDecode", router="EndpointPicker"),
-        want=True,
-    ),
-]
-
-
-@pytest.mark.parametrize("case", ROUTING_MISSING_CASES, ids=lambda case: case.name)
-def test_routing_missing(case: RoutingMissingCase) -> None:
-    """A PrefillDecode replica without its routing is caught before it's composed."""
-    replica = _replica(
-        name="r",
-        namespace="ml-team",
-        cluster_name="cluster-a",
-        labels=None,
-        model_cache_ref=None,
-        serving=case.serving,
-        engines=[
-            v1alpha1.Engine(
-                name="main",
-                members=[
-                    v1alpha1.Member(
-                        role="Standalone",
-                        nodePoolName="frontier",
-                        template=v1alpha1.Template(
-                            spec=v1alpha1.Spec(containers=[v1alpha1.Container(name="engine", image="e")])
-                        ),
-                    )
-                ],
-            )
-        ],
-    )
-    assert routing.prefill_decode_routing_missing(replica) == case.want, case.reason
-
-
-# A user's config reaches the function through a protobuf Struct, which keeps no
-# key order and turns every number into a float. Either would change the
-# rendering, and so the checksum that rolls the picker, between runs.
-DECODE_WITHOUT_SIDECAR_CASES = [
-    DecodeWithoutSidecarCase(
-        name="DecodeEngineOnly",
-        reason="A PrefillDecode decode pod with only its engine has no sidecar.",
-        serving=v1alpha1.Serving(
-            mode="PrefillDecode",
-            router="EndpointPicker",
-            endpointPicker=v1alpha1.EndpointPicker(image="example.com/picker:v2", config={"kind": "K"}),
-        ),
-        decode_containers=[v1alpha1.Container(name="engine", image="e")],
-        want=True,
-    ),
-    DecodeWithoutSidecarCase(
-        name="DecodeWithSidecar",
-        reason="A PrefillDecode decode pod with a container beside the engine counts as having a sidecar.",
-        serving=v1alpha1.Serving(
-            mode="PrefillDecode",
-            router="EndpointPicker",
-            endpointPicker=v1alpha1.EndpointPicker(image="example.com/picker:v2", config={"kind": "K"}),
-        ),
-        decode_containers=[
-            v1alpha1.Container(name="sidecar", image="s"),
-            v1alpha1.Container(name="engine", image="e"),
-        ],
-        want=False,
-    ),
-    DecodeWithoutSidecarCase(
-        name="Unified",
-        reason="A Unified replica has no decode pod to check.",
-        serving=None,
-        decode_containers=[v1alpha1.Container(name="engine", image="e")],
-        want=False,
-    ),
-]
-
-
-@pytest.mark.parametrize("case", DECODE_WITHOUT_SIDECAR_CASES, ids=lambda case: case.name)
-def test_decode_without_sidecar(case: DecodeWithoutSidecarCase) -> None:
-    """A PrefillDecode decode pod with no container beside its engine is caught."""
-    phases = ("Prefill", "Decode") if case.serving else (None,)
-    replica = _replica(
-        name="r",
-        namespace="ml-team",
-        cluster_name="cluster-a",
-        labels=None,
-        model_cache_ref=None,
-        serving=case.serving,
-        engines=[
-            v1alpha1.Engine(
-                name=(phase or "main").lower(),
-                phase=phase,
-                members=[
-                    v1alpha1.Member(
-                        role="Standalone",
-                        nodePoolName="frontier",
-                        template=v1alpha1.Template(
-                            spec=v1alpha1.Spec(
-                                containers=case.decode_containers
-                                if phase in ("Decode", None)
-                                else [v1alpha1.Container(name="engine", image="e")]
-                            )
-                        ),
-                    )
-                ],
-            )
-            for phase in phases
-        ],
-    )
-    assert routing.decode_without_sidecar(replica) == case.want, case.reason
-
-
-RENDER_PICKER_CONFIG_CASES = [
-    RenderPickerConfigCase(
-        name="KeysSorted",
-        reason="Keys render sorted at every level, whatever order they arrive in.",
-        config={"plugins": [{"type": "queue-scorer", "parameters": {"b": "x", "a": "y"}}], "kind": "K"},
-        want=(
-            "{\n"
-            '  "kind": "K",\n'
-            '  "plugins": [\n'
-            "    {\n"
-            '      "parameters": {\n'
-            '        "a": "y",\n'
-            '        "b": "x"\n'
-            "      },\n"
-            '      "type": "queue-scorer"\n'
-            "    }\n"
-            "  ]\n"
-            "}"
-        ),
-    ),
-    RenderPickerConfigCase(
-        name="WholeFloatsAsInts",
-        reason="A whole float renders as an int, and a fractional float stays a float.",
-        config={"blockSizeTokens": 64.0, "weights": [2.0, 0.5]},
-        want='{\n  "blockSizeTokens": 64,\n  "weights": [\n    2,\n    0.5\n  ]\n}',
-    ),
-    RenderPickerConfigCase(
-        name="NestedFloats",
-        reason="Floats inside a dict inside a list follow the same rule: whole ones become ints, others don't change.",
-        config={"plugins": [{"parameters": {"nonCachedTokens": 16.0, "threshold": 0.25}}]},
-        want=(
-            "{\n"
-            '  "plugins": [\n'
-            "    {\n"
-            '      "parameters": {\n'
-            '        "nonCachedTokens": 16,\n'
-            '        "threshold": 0.25\n'
-            "      }\n"
-            "    }\n"
-            "  ]\n"
-            "}"
-        ),
-    ),
-]
-
-
-@pytest.mark.parametrize("case", RENDER_PICKER_CONFIG_CASES, ids=lambda case: case.name)
-def test_render_picker_config(case: RenderPickerConfigCase) -> None:
-    """A user's picker config renders the same way every run."""
-    assert routing._render_picker_config(case.config) == case.want, case.reason
 
 
 # compose-inference-cluster creates the namespace a replica's objects land in,

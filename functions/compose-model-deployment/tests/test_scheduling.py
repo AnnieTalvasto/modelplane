@@ -80,10 +80,10 @@ def _deployment(
     """The ModelDeployment my-model, whose one engine, main, has the given members."""
     return mdv1alpha1.ModelDeployment(
         metadata=metav1.ObjectMeta(name="my-model", namespace="ml-team"),
-        spec=mdv1alpha1.SpecModel1(
+        spec=mdv1alpha1.SpecModel2(
             replicas=replicas,
-            template=mdv1alpha1.TemplateModel(
-                spec=mdv1alpha1.SpecModel(
+            template=mdv1alpha1.TemplateModel1(
+                spec=mdv1alpha1.SpecModel1(
                     engines=[mdv1alpha1.Engine(name="main", copies=1, members=members)],
                     tolerations=tolerations,
                 ),
@@ -190,7 +190,7 @@ def _replica(
                 "modelplane.ai/replica-index": str(index),
             },
         ),
-        spec=mrv1alpha1.SpecModel(
+        spec=mrv1alpha1.SpecModel1(
             clusterName=cluster, engines=[mrv1alpha1.Engine(name="main", copies=1, members=members)]
         ),
     )

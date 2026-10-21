@@ -158,8 +158,8 @@ class ReadinessProbe(BaseModel):
 
 
 class Resources(BaseModel):
-    limits: dict[str, int | str] | None = None
-    requests: dict[str, int | str] | None = None
+    limits: dict[str, int | str] | None = Field(None, max_length=3)
+    requests: dict[str, int | str] | None = Field(None, max_length=3)
 
 
 class Container(BaseModel):
@@ -278,21 +278,48 @@ class ModelCacheRef(BaseModel):
     """
 
 
-class EndpointPicker(BaseModel):
-    config: dict[str, Any] = Field(..., min_length=1)
-    """
-    The picker's configuration, such as an llm-d EndpointPickerConfig, passed to the picker without Modelplane reading it. It replaces Modelplane's default configuration whole.
-    """
+class ValueFromModel(BaseModel):
+    configMapKeyRef: ConfigMapKeyRef | None = None
+    fieldRef: FieldRef | None = None
+    secretKeyRef: SecretKeyRef | None = None
+
+
+class ContainerModel(BaseModel):
+    args: list[str] | None = None
+    command: list[str] | None = None
+    env: list[EnvItem] | None = None
     image: constr(min_length=1)
+    name: constr(min_length=1, max_length=63)
+    resources: Resources | None = None
+
+
+class SpecModel(BaseModel):
+    containers: list[ContainerModel] = Field(..., max_length=1, min_length=1)
     """
-    The endpoint picker image. A configuration is written for one picker release, so it names its picker.
+    The picker container, named "epp". Modelplane sets MODELPLANE_POOL_NAME, MODELPLANE_POOL_NAMESPACE and, when config is set, MODELPLANE_PICKER_CONFIG in its environment, for its args to pass on as $(MODELPLANE_POOL_NAME). The picker serves the gateway's gRPC on 9002, gRPC health on 9003 and Prometheus metrics on 9090. Modelplane declares those ports, and probes readiness on 9003.
+    """
+    imagePullSecrets: list[ImagePullSecret] | None = None
+
+
+class TemplateModel(BaseModel):
+    spec: SpecModel
+
+
+class EndpointPicker(BaseModel):
+    config: dict[str, Any] | None = Field(None, min_length=1)
+    """
+    The picker's configuration, such as an llm-d EndpointPickerConfig. Modelplane mounts it at $(MODELPLANE_PICKER_CONFIG) without reading it. Omitted for a picker that takes no configuration.
+    """
+    template: TemplateModel
+    """
+    Pod template for the picker. A curated subset of PodTemplateSpec, like a member's. The user writes the picker's command line, since each picker spells it differently.
     """
 
 
 class Serving(BaseModel):
     endpointPicker: EndpointPicker | None = None
     """
-    The endpoint picker's image and configuration. Required exactly when router is EndpointPicker. Modelplane composes the picker's pool, Service and RBAC around it.
+    The endpoint picker Modelplane runs in front of the serving pods. Required exactly when router is EndpointPicker. Modelplane composes the picker's InferencePool, Service and RBAC around it.
     """
     mode: Literal['Unified', 'PrefillDecode']
     """
@@ -320,7 +347,7 @@ class Toleration(BaseModel):
     value: str | None = None
 
 
-class SpecModel(BaseModel):
+class SpecModel1(BaseModel):
     clusterSelector: ClusterSelector | None = None
     """
     Optional label selector to filter InferenceClusters. If omitted, all ready clusters are candidates.
@@ -343,12 +370,12 @@ class SpecModel(BaseModel):
     """
 
 
-class TemplateModel(BaseModel):
+class TemplateModel1(BaseModel):
     metadata: Metadata | None = None
-    spec: SpecModel
+    spec: SpecModel1
 
 
-class SpecModel1(BaseModel):
+class SpecModel2(BaseModel):
     crossplane: Crossplane | None = None
     """
     Configures how Crossplane will reconcile this composite resource
@@ -357,7 +384,7 @@ class SpecModel1(BaseModel):
     """
     How many ModelReplicas to fan out to. Each replica is a complete serving instance scheduled to one InferenceCluster. 0 parks the deployment: its replicas and endpoints are removed but the object and its spec remain, and conditions report NoReplicasDesired.
     """
-    template: TemplateModel
+    template: TemplateModel1
     """
     Template for the ModelReplicas this deployment fans out to. Everything but the replica count lives here, mirroring a Kubernetes Deployment's spec.template.
     """
@@ -398,7 +425,7 @@ class ModelDeployment(BaseModel):
     """
     Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
     """
-    spec: SpecModel1
+    spec: SpecModel2
     status: Status | None = None
 
 

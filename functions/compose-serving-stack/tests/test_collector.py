@@ -57,6 +57,19 @@ class PortRewriteCase:
 
 
 @dataclasses.dataclass
+class InFlightCase:
+    """A test case for which gateway series of requests in flight the gateway job keeps."""
+
+    name: str
+    reason: str
+    cluster: str
+    gateway: str
+    # The namespace and service the fleet model rule captures, or None if it
+    # doesn't match, which the next rule drops.
+    want: tuple[str, str] | None
+
+
+@dataclasses.dataclass
 class StatementsCase:
     """A test case for collector.statements."""
 
@@ -218,6 +231,55 @@ def _config(
                                     "target_label": "__metrics_path__",
                                     "regex": "(.+)",
                                 },
+                                {
+                                    "source_labels": [
+                                        "__meta_kubernetes_pod_label_gateway_envoyproxy_io_owning_gateway_name"
+                                    ],
+                                    "target_label": "gateway",
+                                },
+                            ],
+                            "metric_relabel_configs": [
+                                {
+                                    "source_labels": ["__name__", "envoy_cluster_name", "gateway"],
+                                    "regex": "envoy_cluster_upstream_rq_active;httproute/(mp-[^/]+)/([^/]+)/rule/0;inference-gateway",
+                                    "target_label": "__tmp_model",
+                                    "replacement": "true",
+                                },
+                                {
+                                    "source_labels": ["__name__", "__tmp_model"],
+                                    "regex": "envoy_cluster_upstream_rq_active;",
+                                    "action": "drop",
+                                },
+                                {
+                                    "source_labels": ["__name__", "envoy_cluster_name"],
+                                    "regex": "envoy_cluster_upstream_rq_active;httproute/(mp-[^/]+)/([^/]+)/rule/0",
+                                    "target_label": "namespace",
+                                    "replacement": "$1",
+                                },
+                                {
+                                    "source_labels": ["__name__", "envoy_cluster_name"],
+                                    "regex": "envoy_cluster_upstream_rq_active;httproute/(mp-[^/]+)/([^/]+)/rule/0",
+                                    "target_label": "service",
+                                    "replacement": "$2",
+                                },
+                                {
+                                    "source_labels": ["__name__"],
+                                    "regex": "envoy_cluster_upstream_rq_active",
+                                    "target_label": "envoy_cluster_name",
+                                    "replacement": "",
+                                },
+                                {
+                                    "source_labels": ["__name__"],
+                                    "regex": "envoy_cluster_upstream_rq_active",
+                                    "target_label": "gateway",
+                                    "replacement": "",
+                                },
+                                {
+                                    "source_labels": ["__name__"],
+                                    "regex": "envoy_cluster_upstream_rq_active",
+                                    "target_label": "__tmp_model",
+                                    "replacement": "",
+                                },
                             ],
                         },
                         # A target of the gateway's own: its GenAI metrics are on
@@ -366,6 +428,7 @@ def _config(
                             'set(metric.name, "modelplane_frontend_request_duration_seconds") where metric.name == "gen_ai_server_request_duration_seconds"',
                             'set(metric.name, "modelplane_frontend_ttft_seconds") where metric.name == "gen_ai_server_time_to_first_token_seconds"',
                             'set(metric.name, "modelplane_frontend_tpot_seconds") where metric.name == "gen_ai_server_time_per_output_token_seconds"',
+                            'set(metric.name, "modelplane_frontend_requests_active") where metric.name == "envoy_cluster_upstream_rq_active"',
                             'set(metric.name, "modelplane_request_ttft_seconds") where metric.name == "vllm:time_to_first_token_seconds"',
                             'set(metric.name, "modelplane_request_duration_seconds") where metric.name == "vllm:e2e_request_latency_seconds"',
                             'set(metric.name, "modelplane_request_queue_seconds") where metric.name == "vllm:request_queue_time_seconds"',
@@ -687,6 +750,63 @@ def test_port_rewrite(case: PortRewriteCase) -> None:
     assert got == case.want, case.reason
 
 
+IN_FLIGHT_CASES = [
+    InFlightCase(
+        name="FleetModel",
+        reason="The fleet gateway's cluster for a ModelService's route matches, capturing its namespace and service.",
+        cluster="httproute/mp-ml-team-51733/qwen/rule/0",
+        gateway="inference-gateway",
+        want=("mp-ml-team-51733", "qwen"),
+    ),
+    InFlightCase(
+        name="ClusterGateway",
+        reason="A cluster gateway's copy of the same requests doesn't match, so a sum counts each request once.",
+        cluster="httproute/mp-ml-team-51733/qwen-34d80/rule/0",
+        gateway="cluster-gateway",
+        want=None,
+    ),
+    InFlightCase(
+        name="NotAModel",
+        reason="A route in modelplane-system, such as Grafana's, isn't a model and doesn't match.",
+        cluster="httproute/modelplane-system/grafana/rule/0",
+        gateway="inference-gateway",
+        want=None,
+    ),
+    InFlightCase(
+        name="EnvoyCluster",
+        reason="A cluster Envoy builds for itself doesn't match.",
+        cluster="xds_cluster",
+        gateway="inference-gateway",
+        want=None,
+    ),
+]
+
+
+@pytest.mark.parametrize("case", IN_FLIGHT_CASES, ids=lambda case: case.name)
+def test_in_flight(case: InFlightCase) -> None:
+    """The gateway job's fleet model rule matches the fleet gateway's requests in flight to each model, and no others."""
+    # Like test_port_rewrite, this checks what the rule does to a series, which
+    # comparing the config can't, so it picks the rule out of a rendered config.
+    config = yaml.safe_load(
+        collector.config(
+            "prod-us-east",
+            list(stacks.BUILTIN_MAPPINGS),
+            [_sink(name="primary", type_="otlphttp", secret=None)],
+            {"oauth2client/acme": {"token_url": "https://issuer.acme.example/token"}},
+        )
+    )
+    rule = next(
+        r
+        for j in config["receivers"]["prometheus"]["config"]["scrape_configs"]
+        if j["job_name"] == "modelplane-gateway"
+        for r in j["metric_relabel_configs"]
+        if r.get("target_label") == "__tmp_model" and r.get("replacement") == "true"
+    )
+    matched = re.fullmatch(rule["regex"], f"envoy_cluster_upstream_rq_active;{case.cluster};{case.gateway}")
+    got = (matched[1], matched[2]) if matched else None
+    assert got == case.want, case.reason
+
+
 STATEMENTS_CASES = [
     # The built-in mappings, read from the stacks package rather than restated,
     # because what the collector compiles them to is what this case pins.
@@ -705,6 +825,7 @@ STATEMENTS_CASES = [
                 'set(metric.name, "modelplane_frontend_request_duration_seconds") where metric.name == "gen_ai_server_request_duration_seconds"',
                 'set(metric.name, "modelplane_frontend_ttft_seconds") where metric.name == "gen_ai_server_time_to_first_token_seconds"',
                 'set(metric.name, "modelplane_frontend_tpot_seconds") where metric.name == "gen_ai_server_time_per_output_token_seconds"',
+                'set(metric.name, "modelplane_frontend_requests_active") where metric.name == "envoy_cluster_upstream_rq_active"',
                 'set(metric.name, "modelplane_request_ttft_seconds") where metric.name == "vllm:time_to_first_token_seconds"',
                 'set(metric.name, "modelplane_request_duration_seconds") where metric.name == "vllm:e2e_request_latency_seconds"',
                 'set(metric.name, "modelplane_request_queue_seconds") where metric.name == "vllm:request_queue_time_seconds"',
@@ -937,7 +1058,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="55bc4445ed790fa2",
+                    config_hash="8c64e59d01d1670e",
                     volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                     volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                     env_from=None,
@@ -982,7 +1103,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="5b3619d55150aa79",
+                    config_hash="709ec5e0f4e73c4a",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -1049,7 +1170,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="5097b903785819b1",
+                    config_hash="9bce4f1ec98c43bd",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-vendor", "secret": {"secretName": "vendor-token"}},

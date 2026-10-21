@@ -33,6 +33,8 @@ The gateway's `modelplane_frontend_*` series have no `deployment` label. They
 carry the model instead: `gen_ai_original_model` is the model the caller sent,
 `<namespace>/<service>`, and `gen_ai_request_model` is the deployment the gateway
 sent the request to, `<namespace>/<deployment>`.
+`modelplane_frontend_requests_active` is counted per `ModelService` instead. It
+has a `service` label, and the same `namespace` label as an engine's series.
 
 Each replica publishes its own series, so combine them in your query. Which
 combination is right follows from what the metric measures:
@@ -65,6 +67,7 @@ Some examples of the available metrics:
 | `modelplane_frontend_ttft_seconds` | Time to the first token, measured at the gateway |
 | `modelplane_frontend_tpot_seconds` | Time per output token, measured at the gateway |
 | `modelplane_frontend_request_duration_seconds` | What the caller waited, end to end |
+| `modelplane_frontend_requests_active` | Requests open at the gateway, per `ModelService` |
 | `modelplane_request_queue_seconds` | How long a request waited before the engine started |
 | `modelplane_requests_waiting` | Queue depth per engine |
 | `modelplane_kv_cache_utilization_ratio` | KV-cache occupancy, averaged over replicas |
@@ -87,6 +90,20 @@ high maximum beside `modelplane_requests_preempted_total` climbing is one replic
 ```promql
 max by (deployment) (modelplane_kv_cache_utilization_ratio) > 0.95
 ```
+
+An engine works on a request until it finishes or is told to stop. When a caller
+disconnects and the engine isn't told, the engine's running and waiting counts don't
+drop while the gateway's count of open requests does, and new requests queue behind
+output nobody reads. To compare the two for a deployment `qwen3-8b` that a
+`ModelService` of the same name fronts, and that serves each request on one engine:
+
+```promql
+sum by (namespace) (modelplane_requests_running{deployment="qwen3-8b"} + modelplane_requests_waiting{deployment="qwen3-8b"})
+  - sum by (namespace) (modelplane_frontend_requests_active{service="qwen3-8b"})
+```
+
+If the difference is well above 0 for minutes, the engine is doing work no caller
+is waiting for.
 
 ## Send telemetry to a destination
 

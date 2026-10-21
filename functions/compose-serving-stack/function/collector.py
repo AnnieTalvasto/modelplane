@@ -56,6 +56,21 @@ _METRICS_PORT = "http"
 # carries Envoy's own statistics and none of these.
 _GENAI_PORT = "aigw-admin"
 
+# Requests Envoy has sent upstream and not yet finished, per cluster it built.
+# Only the fleet's front door counts what callers are waiting on:
+# compose-inference-gateway's Gateway, on whichever cluster runs it. Each
+# inference cluster also runs a cluster-gateway the fleet gateway forwards to,
+# which counts the same requests a second time, so its copy is dropped. So are
+# the clusters that aren't a model: Envoy's own, and routes such as Grafana's.
+_IN_FLIGHT = "envoy_cluster_upstream_rq_active"
+_FLEET_GATEWAY = "inference-gateway"
+
+# The cluster Envoy builds for a ModelService: compose-model-route's
+# AIGatewayRoute, named for the service in the team's mirrored namespace, and
+# rule 0, the one rule compose_route gives it. The namespace is the one an
+# engine's series carry.
+_MODEL_ROUTE = r"httproute/(mp-[^/]+)/([^/]+)/rule/0"
+
 # What a series is attributed to, and the only resource attributes that survive
 # to the exporter. The merge across replicas groups on exactly these, so a
 # series differing in nothing else is one series.
@@ -171,6 +186,42 @@ def _annotated_port() -> list[dict[str, Any]]:
     ]
 
 
+def _in_flight_relabels() -> list[dict[str, Any]]:
+    """Keep the fleet gateway's in-flight requests to each model, as namespace and service.
+
+    Prometheus relabeling rather than a transform statement, because it runs
+    as the series are scraped, and the two drops are on labels a mapping can't
+    select on. A regex here is anchored at both ends.
+    """
+    return [
+        {
+            "source_labels": ["__name__", "envoy_cluster_name", "gateway"],
+            "regex": f"{_IN_FLIGHT};{_MODEL_ROUTE};{_FLEET_GATEWAY}",
+            "target_label": "__tmp_model",
+            "replacement": "true",
+        },
+        {"source_labels": ["__name__", "__tmp_model"], "regex": f"{_IN_FLIGHT};", "action": "drop"},
+        {
+            "source_labels": ["__name__", "envoy_cluster_name"],
+            "regex": f"{_IN_FLIGHT};{_MODEL_ROUTE}",
+            "target_label": "namespace",
+            "replacement": "$1",
+        },
+        {
+            "source_labels": ["__name__", "envoy_cluster_name"],
+            "regex": f"{_IN_FLIGHT};{_MODEL_ROUTE}",
+            "target_label": "service",
+            "replacement": "$2",
+        },
+        # An empty label is no label, so these leave the series with only the
+        # identity just set.
+        *(
+            {"source_labels": ["__name__"], "regex": _IN_FLIGHT, "target_label": label, "replacement": ""}
+            for label in ("envoy_cluster_name", "gateway", "__tmp_model")
+        ),
+    ]
+
+
 def _scrape_configs() -> list[dict[str, Any]]:
     """What to scrape on an inference cluster.
 
@@ -221,7 +272,12 @@ def _scrape_configs() -> list[dict[str, Any]]:
                 # front door 404s every interval and the modelplane_frontend_*
                 # series - the ones an SLO is written against - never arrive.
                 *_annotated_path(),
+                {
+                    "source_labels": ["__meta_kubernetes_pod_label_gateway_envoyproxy_io_owning_gateway_name"],
+                    "target_label": "gateway",
+                },
             ],
+            "metric_relabel_configs": _in_flight_relabels(),
         },
         {
             # The GenAI metrics, which are the SLO ones: what a caller waited,

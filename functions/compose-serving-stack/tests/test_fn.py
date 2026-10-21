@@ -1431,6 +1431,55 @@ def _collector_config(
                                     "target_label": "__metrics_path__",
                                     "regex": "(.+)",
                                 },
+                                {
+                                    "source_labels": [
+                                        "__meta_kubernetes_pod_label_gateway_envoyproxy_io_owning_gateway_name"
+                                    ],
+                                    "target_label": "gateway",
+                                },
+                            ],
+                            "metric_relabel_configs": [
+                                {
+                                    "source_labels": ["__name__", "envoy_cluster_name", "gateway"],
+                                    "regex": "envoy_cluster_upstream_rq_active;httproute/(mp-[^/]+)/([^/]+)/rule/0;inference-gateway",
+                                    "target_label": "__tmp_model",
+                                    "replacement": "true",
+                                },
+                                {
+                                    "source_labels": ["__name__", "__tmp_model"],
+                                    "regex": "envoy_cluster_upstream_rq_active;",
+                                    "action": "drop",
+                                },
+                                {
+                                    "source_labels": ["__name__", "envoy_cluster_name"],
+                                    "regex": "envoy_cluster_upstream_rq_active;httproute/(mp-[^/]+)/([^/]+)/rule/0",
+                                    "target_label": "namespace",
+                                    "replacement": "$1",
+                                },
+                                {
+                                    "source_labels": ["__name__", "envoy_cluster_name"],
+                                    "regex": "envoy_cluster_upstream_rq_active;httproute/(mp-[^/]+)/([^/]+)/rule/0",
+                                    "target_label": "service",
+                                    "replacement": "$2",
+                                },
+                                {
+                                    "source_labels": ["__name__"],
+                                    "regex": "envoy_cluster_upstream_rq_active",
+                                    "target_label": "envoy_cluster_name",
+                                    "replacement": "",
+                                },
+                                {
+                                    "source_labels": ["__name__"],
+                                    "regex": "envoy_cluster_upstream_rq_active",
+                                    "target_label": "gateway",
+                                    "replacement": "",
+                                },
+                                {
+                                    "source_labels": ["__name__"],
+                                    "regex": "envoy_cluster_upstream_rq_active",
+                                    "target_label": "__tmp_model",
+                                    "replacement": "",
+                                },
                             ],
                         },
                         {
@@ -1555,6 +1604,7 @@ def _collector_config(
                             'set(metric.name, "modelplane_frontend_request_duration_seconds") where metric.name == "gen_ai_server_request_duration_seconds"',
                             'set(metric.name, "modelplane_frontend_ttft_seconds") where metric.name == "gen_ai_server_time_to_first_token_seconds"',
                             'set(metric.name, "modelplane_frontend_tpot_seconds") where metric.name == "gen_ai_server_time_per_output_token_seconds"',
+                            'set(metric.name, "modelplane_frontend_requests_active") where metric.name == "envoy_cluster_upstream_rq_active"',
                             'set(metric.name, "modelplane_request_ttft_seconds") where metric.name == "vllm:time_to_first_token_seconds"',
                             'set(metric.name, "modelplane_request_duration_seconds") where metric.name == "vllm:e2e_request_latency_seconds"',
                             'set(metric.name, "modelplane_request_queue_seconds") where metric.name == "vllm:request_queue_time_seconds"',
@@ -4421,7 +4471,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="0cf483d8c47017af",
+                        config_hash="ccc800f7a40cd911",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -4778,7 +4828,7 @@ COMPOSE_CASES = [
                         ready=fnv1.READY_TRUE,
                     ),
                     "collector": _collector(
-                        config_hash="47b8fbf904b68d9c",
+                        config_hash="852f8ccff02735fe",
                         volumes=[
                             {"name": "config", "configMap": {"name": "modelplane-collector"}},
                             {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -5103,7 +5153,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="6b40121d65a36ddc",
+                        config_hash="2cb5409d88b7924a",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -5404,7 +5454,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="517d32fcc11ffd0d",
+                        config_hash="177900f19ee86dff",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -5733,7 +5783,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="0cf483d8c47017af",
+                        config_hash="ccc800f7a40cd911",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,

@@ -40,6 +40,14 @@ _GATEWAY = {
     "gen_ai_server_time_per_output_token_seconds": "modelplane_frontend_tpot_seconds",
 }
 
+# The front door's own count of requests in flight to each model, which the
+# collector keeps for the fleet gateway's model routes only (see
+# collector._IN_FLIGHT). The engines' running and waiting requests well above
+# it, for minutes, is work no caller is waiting for.
+_GATEWAY_PROXY = {
+    "envoy_cluster_upstream_rq_active": "modelplane_frontend_requests_active",
+}
+
 # The engines, which explain what the gateway measured.
 _VLLM = {
     "vllm:time_to_first_token_seconds": "modelplane_request_ttft_seconds",
@@ -130,6 +138,7 @@ def mappings() -> list[v1alpha1.MetricMapping]:
     """
     return [
         _mapping("modelplane-gateway", _GATEWAY),
+        _mapping("modelplane-gateway-proxy", _GATEWAY_PROXY),
         _mapping("modelplane-vllm", _VLLM),
         _mapping("modelplane-sglang", _SGLANG),
         _mapping("modelplane-picker", _PICKER),

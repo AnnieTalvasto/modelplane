@@ -331,13 +331,24 @@ engine keeps generating output nobody reads. On a prefill/decode deployment, rea
 request it runs, so it reports `length` for every one. SGLang doesn't publish a
 counter of how its requests ended.
 
+SGLang does count the HTTP responses it sends, by status code. Its counter,
+`sglang:http_responses_total`, becomes `modelplane_engine_responses_total`, with the
+status code in a `status` label. The codes an OpenAI-compatible server returns become
+`ok`, `client_error` and `server_error`, the classes the gateway uses, and a rarer
+code keeps its number. The series keeps SGLang's `endpoint` label, because SGLang
+counts its `/health` and `/metrics` responses too, so filter on it. The requests
+SGLang has open, `sglang:http_requests_active`, become `modelplane_engine_requests_active`,
+with the same `endpoint` label. The vLLM mapping populates neither.
+
 The built-in mappings cover what every deployment needs, from the engine versions
 the recipes pin, which is what they're tested against: vLLM v0.9.2, v0.23.0, v0.25.1
 and v0.27.1, and SGLang v0.5.10 and v0.5.12. Metrics for a feature you turn on, such
 as speculative decoding or a KV offload tier, aren't among them. Write a
 `MetricMapping` for those alongside the deployment that turns the feature on. The
 speculative decoding variant of the [Qwen3-8B recipe]({{< ref "/recipes/qwen3-8b.md#speculative-decoding" >}})
-includes one. For a KV offload tier, which vLLM runs from v0.27.1 with
+includes one. SGLang's `spec_accept_rate` and `spec_accept_length` aren't mapped,
+because what `spec_accept_rate` measures changed between v0.5.10 and v0.5.12. For a
+KV offload tier, which vLLM runs from v0.27.1 with
 `--kv-offloading-backend`:
 
 ```yaml
@@ -527,6 +538,11 @@ as they are and don't take `rate()` of them.
 histograms differently. vLLM resolves down to a millisecond. SGLang resolves to a hundred
 of them. A quantile across both is wrong, not approximate. Use the engine series to compare
 one engine against itself, and the `frontend_` series for anything fleet-wide.
+
+SGLang's time to first token is `modelplane_sglang_ttft_seconds`, a name of its own,
+so it never mixes with vLLM's buckets. Its buckets run to 400 seconds where the
+gateway's stop at 60, so it's the series to read when SGLang's first tokens take
+longer than a minute.
 
 Some measurements don't translate at all. SGLang's inter-token latency isn't vLLM's time per
 output token, so neither is renamed onto a shared name. The gateway measures time per output

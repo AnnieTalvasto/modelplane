@@ -78,7 +78,8 @@ token are not that: the names are close, the measurements differ, and renaming o
 other produces a number that is confidently wrong. Even where two engines agree on the
 measurement they can disagree on the histogram. vLLM resolves down to a millisecond and
 SGLang to a hundred of them, so a quantile taken across both is wrong rather than
-approximate.
+approximate. SGLang's time to first token has a name of its own,
+`modelplane_sglang_ttft_seconds`, for that reason.
 
 One component sidesteps most of this. Envoy AI Gateway proxies every request and measures it
 itself, reporting under the OpenTelemetry GenAI conventions: time to first token, time per
@@ -634,6 +635,9 @@ separate those from a slow model.
 | `modelplane_requests_preempted_total` | counter | engine |
 | `modelplane_tokens_recomputed_total` | counter | engine, where reported |
 | `modelplane_responses_total{reason}` | counter | engine |
+| `modelplane_engine_responses_total{status}` | counter | engine, SGLang only |
+| `modelplane_engine_requests_active` | gauge | engine, SGLang only |
+| `modelplane_sglang_ttft_seconds` | histogram | engine, SGLang only |
 | `modelplane_tool_call_parses_total{outcome}` | counter | engine, where reported |
 | `modelplane_route_decision_seconds` | histogram | picker |
 | `modelplane_route_requests_total{decision}` | counter | picker |
@@ -697,7 +701,9 @@ carry `gpu_uuid` and the node, which is all DCGM knows.
 
 Two labels have closed value sets: `status` on `modelplane_requests_total` is `ok`,
 `client_error` or `server_error`, and `direction` on `modelplane_tokens_total` and
-`modelplane_engine_tokens_total` is `input` or `output`.
+`modelplane_engine_tokens_total` is `input` or `output`. `status` on
+`modelplane_engine_responses_total` uses the same three classes for the codes an
+OpenAI-compatible server returns, and a rarer code keeps its number.
 
 Cardinality is bounded by construction, and deliberately. Every label above is something
 Modelplane created, so the series count is the number of deployments times the clusters they

@@ -450,6 +450,15 @@ def _config(
                             'delete_key(datapoint.attributes, "finished_reason") where metric.name == "vllm:request_success_total"',
                             'set(datapoint.attributes["direction"], "input") where metric.name == "sglang:prompt_tokens_histogram_sum"',
                             'set(datapoint.attributes["direction"], "output") where metric.name == "sglang:generation_tokens_histogram_sum"',
+                            'set(datapoint.attributes["status"], datapoint.attributes["status_code"]) where metric.name == "sglang:http_responses_total"',
+                            'set(datapoint.attributes["status"], "ok") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "200"',
+                            'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "400"',
+                            'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "404"',
+                            'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "422"',
+                            'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "429"',
+                            'set(datapoint.attributes["status"], "server_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "500"',
+                            'set(datapoint.attributes["status"], "server_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "503"',
+                            'delete_key(datapoint.attributes, "status_code") where metric.name == "sglang:http_responses_total"',
                         ],
                     },
                     {
@@ -480,9 +489,12 @@ def _config(
                             'set(metric.name, "modelplane_requests_preempted_total") where metric.name == "sglang:num_retracted_requests_total"',
                             'set(metric.name, "modelplane_prefix_cache_hits_total") where metric.name == "sglang:cached_tokens_total"',
                             'set(metric.name, "modelplane_prefix_cache_lookups_total") where metric.name == "sglang:prompt_tokens_total"',
+                            'set(metric.name, "modelplane_sglang_ttft_seconds") where metric.name == "sglang:time_to_first_token_seconds"',
+                            'set(metric.name, "modelplane_engine_requests_active") where metric.name == "sglang:http_requests_active"',
                             'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "sglang:prompt_tokens_histogram_sum"',
                             'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "sglang:generation_tokens_histogram_sum"',
                             'set(metric.name, "modelplane_engine_requests_total") where metric.name == "sglang:prompt_tokens_histogram_count"',
+                            'set(metric.name, "modelplane_engine_responses_total") where metric.name == "sglang:http_responses_total"',
                             'set(metric.name, "modelplane_route_decision_seconds") where metric.name == "llm_d_epp_scheduler_e2e_duration_seconds"',
                             'set(metric.name, "modelplane_gpu_memory_used_bytes") where metric.name == "DCGM_FI_DEV_FB_USED"',
                             'set(metric.name, "modelplane_gpu_memory_free_bytes") where metric.name == "DCGM_FI_DEV_FB_FREE"',
@@ -920,6 +932,15 @@ STATEMENTS_CASES = [
                 'delete_key(datapoint.attributes, "finished_reason") where metric.name == "vllm:request_success_total"',
                 'set(datapoint.attributes["direction"], "input") where metric.name == "sglang:prompt_tokens_histogram_sum"',
                 'set(datapoint.attributes["direction"], "output") where metric.name == "sglang:generation_tokens_histogram_sum"',
+                'set(datapoint.attributes["status"], datapoint.attributes["status_code"]) where metric.name == "sglang:http_responses_total"',
+                'set(datapoint.attributes["status"], "ok") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "200"',
+                'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "400"',
+                'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "404"',
+                'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "422"',
+                'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "429"',
+                'set(datapoint.attributes["status"], "server_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "500"',
+                'set(datapoint.attributes["status"], "server_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "503"',
+                'delete_key(datapoint.attributes, "status_code") where metric.name == "sglang:http_responses_total"',
             ],
             [
                 'set(metric.name, "modelplane_frontend_request_duration_seconds") where metric.name == "gen_ai_server_request_duration_seconds"',
@@ -950,9 +971,12 @@ STATEMENTS_CASES = [
                 'set(metric.name, "modelplane_requests_preempted_total") where metric.name == "sglang:num_retracted_requests_total"',
                 'set(metric.name, "modelplane_prefix_cache_hits_total") where metric.name == "sglang:cached_tokens_total"',
                 'set(metric.name, "modelplane_prefix_cache_lookups_total") where metric.name == "sglang:prompt_tokens_total"',
+                'set(metric.name, "modelplane_sglang_ttft_seconds") where metric.name == "sglang:time_to_first_token_seconds"',
+                'set(metric.name, "modelplane_engine_requests_active") where metric.name == "sglang:http_requests_active"',
                 'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "sglang:prompt_tokens_histogram_sum"',
                 'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "sglang:generation_tokens_histogram_sum"',
                 'set(metric.name, "modelplane_engine_requests_total") where metric.name == "sglang:prompt_tokens_histogram_count"',
+                'set(metric.name, "modelplane_engine_responses_total") where metric.name == "sglang:http_responses_total"',
                 'set(metric.name, "modelplane_route_decision_seconds") where metric.name == "llm_d_epp_scheduler_e2e_duration_seconds"',
                 'set(metric.name, "modelplane_gpu_memory_used_bytes") where metric.name == "DCGM_FI_DEV_FB_USED"',
                 'set(metric.name, "modelplane_gpu_memory_free_bytes") where metric.name == "DCGM_FI_DEV_FB_FREE"',
@@ -1162,7 +1186,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="3df8b0bd95ab523b",
+                    config_hash="dd2c199a82264ab7",
                     volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                     volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                     env_from=None,
@@ -1207,7 +1231,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="1e23f5eddc51c964",
+                    config_hash="73bd9d78c3f4bfbb",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -1274,7 +1298,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="08d9b4100a5a050c",
+                    config_hash="3d55f1c0bb84aac6",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-vendor", "secret": {"secretName": "vendor-token"}},
@@ -1446,3 +1470,6 @@ def test_sglang_mappings() -> None:
     }
     assert {s: sglang.get(s) for s in counters} == counters, "SGLang's counters map onto vLLM's names"
     assert "sglang:queue_time_seconds" not in sglang, "SGLang's queue time keeps its own buckets"
+    assert sglang.get("sglang:time_to_first_token_seconds") == "modelplane_sglang_ttft_seconds", (
+        "SGLang's time to first token keeps a name no other source shares"
+    )

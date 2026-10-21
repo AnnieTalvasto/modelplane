@@ -1627,6 +1627,15 @@ def _collector_config(
                             'delete_key(datapoint.attributes, "finished_reason") where metric.name == "vllm:request_success_total"',
                             'set(datapoint.attributes["direction"], "input") where metric.name == "sglang:prompt_tokens_histogram_sum"',
                             'set(datapoint.attributes["direction"], "output") where metric.name == "sglang:generation_tokens_histogram_sum"',
+                            'set(datapoint.attributes["status"], datapoint.attributes["status_code"]) where metric.name == "sglang:http_responses_total"',
+                            'set(datapoint.attributes["status"], "ok") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "200"',
+                            'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "400"',
+                            'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "404"',
+                            'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "422"',
+                            'set(datapoint.attributes["status"], "client_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "429"',
+                            'set(datapoint.attributes["status"], "server_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "500"',
+                            'set(datapoint.attributes["status"], "server_error") where metric.name == "sglang:http_responses_total" and datapoint.attributes["status_code"] == "503"',
+                            'delete_key(datapoint.attributes, "status_code") where metric.name == "sglang:http_responses_total"',
                         ],
                     },
                     {
@@ -1657,9 +1666,12 @@ def _collector_config(
                             'set(metric.name, "modelplane_requests_preempted_total") where metric.name == "sglang:num_retracted_requests_total"',
                             'set(metric.name, "modelplane_prefix_cache_hits_total") where metric.name == "sglang:cached_tokens_total"',
                             'set(metric.name, "modelplane_prefix_cache_lookups_total") where metric.name == "sglang:prompt_tokens_total"',
+                            'set(metric.name, "modelplane_sglang_ttft_seconds") where metric.name == "sglang:time_to_first_token_seconds"',
+                            'set(metric.name, "modelplane_engine_requests_active") where metric.name == "sglang:http_requests_active"',
                             'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "sglang:prompt_tokens_histogram_sum"',
                             'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "sglang:generation_tokens_histogram_sum"',
                             'set(metric.name, "modelplane_engine_requests_total") where metric.name == "sglang:prompt_tokens_histogram_count"',
+                            'set(metric.name, "modelplane_engine_responses_total") where metric.name == "sglang:http_responses_total"',
                             'set(metric.name, "modelplane_route_decision_seconds") where metric.name == "llm_d_epp_scheduler_e2e_duration_seconds"',
                             'set(metric.name, "modelplane_gpu_memory_used_bytes") where metric.name == "DCGM_FI_DEV_FB_USED"',
                             'set(metric.name, "modelplane_gpu_memory_free_bytes") where metric.name == "DCGM_FI_DEV_FB_FREE"',
@@ -4507,7 +4519,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="621ccfac7cdd6dcb",
+                        config_hash="237613603e2ecde4",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -4864,7 +4876,7 @@ COMPOSE_CASES = [
                         ready=fnv1.READY_TRUE,
                     ),
                     "collector": _collector(
-                        config_hash="f42b12acccdf7543",
+                        config_hash="2ee070857b47588d",
                         volumes=[
                             {"name": "config", "configMap": {"name": "modelplane-collector"}},
                             {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -5189,7 +5201,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="cda67908e5ed4c20",
+                        config_hash="82d6158f31af4623",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -5490,7 +5502,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="af47e96adbc381d6",
+                        config_hash="dde9a424b5b70faa",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -5819,7 +5831,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="621ccfac7cdd6dcb",
+                        config_hash="237613603e2ecde4",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,

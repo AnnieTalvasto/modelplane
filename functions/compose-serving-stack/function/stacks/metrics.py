@@ -24,7 +24,10 @@ renamed onto a shared name and the gateway supplies that measurement for
 both. A histogram is renamed only where its bucket boundaries match, which is
 why SGLang's latency histograms are absent here: they resolve to a hundred
 milliseconds where vLLM's resolve to one, and a quantile across the two is
-wrong rather than approximate.
+wrong rather than approximate. SGLang's time to first token is still worth
+having, since the gateway's own histogram stops at a minute and a long prompt
+on a busy engine waits longer than that, so it keeps a name of its own,
+modelplane_sglang_ttft_seconds, which no other source shares.
 
 Matching has to hold across the fleet, not just between two engines, because
 a query sums buckets by boundary and a series with different boundaries
@@ -88,6 +91,8 @@ _SGLANG = {
     "sglang:num_retracted_requests_total": "modelplane_requests_preempted_total",
     "sglang:cached_tokens_total": "modelplane_prefix_cache_hits_total",
     "sglang:prompt_tokens_total": "modelplane_prefix_cache_lookups_total",
+    "sglang:time_to_first_token_seconds": "modelplane_sglang_ttft_seconds",
+    "sglang:http_requests_active": "modelplane_engine_requests_active",
 }
 
 # Each engine's prompt and generation token histograms, taken as counters: the
@@ -147,6 +152,28 @@ _VLLM_RESPONSES: dict[str, object] = {
 }
 
 
+# How the HTTP requests SGLang answered ended, by status. SGLang counts them
+# by raw status code, which design/telemetry.md keeps out of the series: a label
+# with forty values is forty series per deployment. So the codes an
+# OpenAI-compatible server returns fold into the gateway's three classes, ok,
+# client_error and server_error, and a rarer code keeps its number. The
+# counter also carries the endpoint, which a query needs, because SGLang counts
+# /health and /metrics as well as completions. SGLang's speculative-decoding
+# gauges aren't mapped: spec_accept_rate measured accepted tokens over draft
+# tokens at v0.5.10 and accepted drafts over proposed drafts at v0.5.12, so one
+# name would hold two measurements.
+_STATUS_CLASSES = {
+    "200": "ok",
+    **dict.fromkeys(("400", "404", "422", "429"), "client_error"),
+    **dict.fromkeys(("500", "503"), "server_error"),
+}
+_SGLANG_RESPONSES: dict[str, object] = {
+    "from": "sglang:http_responses_total",
+    "to": "modelplane_engine_responses_total",
+    "labels": [{"name": "status", "from": "status_code", "values": _STATUS_CLASSES}],
+}
+
+
 def _tokens(prompt: str, generation: str) -> list[dict[str, object]]:
     """An engine's token histograms as tokens by direction, and requests."""
     return [
@@ -197,7 +224,7 @@ def mappings() -> list[v1alpha1.MetricMapping]:
         _mapping("modelplane-gateway", _GATEWAY),
         _mapping("modelplane-gateway-proxy", _GATEWAY_PROXY),
         _mapping("modelplane-vllm", _VLLM, tokens=_VLLM_TOKENS, extra=(_VLLM_RESPONSES,)),
-        _mapping("modelplane-sglang", _SGLANG, tokens=_SGLANG_TOKENS),
+        _mapping("modelplane-sglang", _SGLANG, tokens=_SGLANG_TOKENS, extra=(_SGLANG_RESPONSES,)),
         _mapping("modelplane-picker", _PICKER),
         _mapping("modelplane-gpu", _GPU, _GPU_UNITS),
     ]

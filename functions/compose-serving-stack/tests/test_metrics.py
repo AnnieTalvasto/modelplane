@@ -79,6 +79,13 @@ PUBLISHED_CASES = [
         file="gateway-v1.1.0.json",
         want=[],
     ),
+    PublishedCase(
+        name="GatewayProxy",
+        reason="Envoy v1.38.4, the proxy Envoy Gateway v1.8.4 runs, publishes every name the gateway proxy mapping reads.",
+        mapping="modelplane-gateway-proxy",
+        file="envoy-v1.38.4.json",
+        want=[],
+    ),
     # The vLLM versions the recipes pin.
     PublishedCase(
         name="VLLM092",

@@ -7698,8 +7698,6 @@ TELEMETRY_LABELS_CASES = [
             "modelplane.ai/role": "Standalone",
         },
     ),
-    # A disaggregated request runs on both engines, and each counts it, so a
-    # query needs the phase to count it once.
     TelemetryLabelsCase(
         name="Prefill",
         reason="A prefill engine's pods carry its phase, so a query can tell its count of a request from the decode engine's.",

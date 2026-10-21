@@ -692,8 +692,8 @@ series an engine produced, because it is read from the engine's own metric prefi
 gateway does not know what served a request. Under disaggregated serving an engine series
 carries a `phase` of `Prefill` or `Decode`, because the two do different work and an average
 of them describes neither, and because both count every request they share. `role`
-is the member's role in its engine, `Standalone`, `Leader` or `Worker`. GPU series carry `gpu_uuid` and the node, which is all DCGM
-knows.
+is the member's role in its engine, `Standalone`, `Leader` or `Worker`. GPU series
+carry `gpu_uuid` and the node, which is all DCGM knows.
 
 Two labels have closed value sets: `status` on `modelplane_requests_total` is `ok`,
 `client_error` or `server_error`, and `direction` on `modelplane_tokens_total` and

@@ -120,13 +120,16 @@ def model_for(api_version: str, kind: str) -> type[pydantic.BaseModel] | None:
     return getattr(mod, kind)
 
 
-# The built-in MetricMappings in compose-serving-stack rename what an engine
-# publishes, so an engine that publishes nothing, or something else, leaves its
-# modelplane_* series empty with no error. Recipes are what users copy,
-# so each one's engines are held to what the mappings read. The versions and
-# flags below are the ones function/stacks/metrics.py in compose-serving-stack
-# says its engine mappings need, so a change to either changes both.
+# Each recipe's engines must publish what the built-in mappings in
+# compose-serving-stack's stacks/metrics.py read, so keep the two in step.
 _TAG = re.compile(r":v(\d+)\.(\d+)\.(\d+)")
+_VLLM_IMAGE = re.compile(r"(^|/)vllm/vllm-openai[:@]")
+_SGLANG_IMAGE = re.compile(r"(^|/)lmsysorg/sglang[:@]")
+
+
+def _has_flag(argv: str, flag: str) -> bool:
+    """Whether argv passes flag as a whole token, bare or as flag=value."""
+    return re.search(rf"(?<!\S){re.escape(flag)}(?:=\S+)?(?!\S)", argv) is not None
 
 
 def _version(image: str) -> tuple[int, int, int] | None:
@@ -148,19 +151,23 @@ def _container_problems(container: pydantic.BaseModel) -> list[str]:
     image = container.image
     argv = " ".join((container.command or []) + (container.args or []))
     version = _version(image)
-    if "vllm/vllm-openai:" in image:
-        if version and version < (0, 9, 2):
+    is_vllm = _VLLM_IMAGE.search(image) is not None
+    is_sglang = _SGLANG_IMAGE.search(image) is not None
+    if not (is_vllm or is_sglang):
+        return []
+    if version is None:
+        return [f"pin {image} to a vX.Y.Z tag, so its engine can be checked against the built-in mappings"]
+    if is_vllm:
+        if version < (0, 9, 2):
             return [
                 "vLLM before v0.9.2 doesn't publish vllm:kv_cache_usage_perc "
                 "or the prefix cache counters the built-in mappings read"
             ]
         return []
-    if "lmsysorg/sglang:" not in image:
-        return []
     problems = []
-    if "--enable-metrics" not in argv:
+    if not _has_flag(argv, "--enable-metrics"):
         problems.append("SGLang serves no /metrics without --enable-metrics")
-    if version and version < (0, 5, 12) and "--collect-tokens-histogram" not in argv:
+    if version < (0, 5, 12) and not _has_flag(argv, "--collect-tokens-histogram"):
         problems.append("SGLang before v0.5.12 publishes no token histograms without --collect-tokens-histogram")
     return problems
 

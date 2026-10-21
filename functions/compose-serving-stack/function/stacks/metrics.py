@@ -31,7 +31,7 @@ a query sums buckets by boundary and a series with different boundaries
 corrupts the sum for everyone. So each modelplane_* histogram has
 exactly one source. The engines' token histograms can't meet that even alone:
 vLLM sizes their buckets from --max-model-len, so two vLLM deployments
-disagree. They leave as counters instead, a sum and a count having no buckets.
+disagree. So they're exported only as their sums and counts, which have no buckets.
 
 docs/utils/validate/validate_manifests.py holds every recipe's engine to the
 versions and flags these mappings need, so a change to one changes both.
@@ -59,8 +59,7 @@ _GATEWAY_PROXY = {
 }
 
 # The engines, which explain what the gateway measured. vLLM publishes these
-# names from v0.9.2. Before it, vllm:gpu_cache_usage_perc stood for the KV cache,
-# and there were no prefix cache counters.
+# names from v0.9.2.
 _VLLM = {
     "vllm:time_to_first_token_seconds": "modelplane_request_ttft_seconds",
     "vllm:e2e_request_latency_seconds": "modelplane_request_duration_seconds",
@@ -94,7 +93,15 @@ _SGLANG = {
 # Each engine's prompt and generation token histograms, taken as counters: the
 # prompt and generated tokens of the requests it finished, and from the prompt
 # histogram's count, the requests. A prompt's tokens include any the prefix
-# cache served. The histograms themselves are dropped (see the module docstring).
+# cache served. Both engines observe these histograms when a request finishes,
+# so tokens and requests count the same requests and divide into tokens per
+# request. The engines' plain token counters, vllm:prompt_tokens_total and
+# sglang:prompt_tokens_total, count tokens as they're processed instead,
+# including requests that never finish, and SGLang's already feeds
+# modelplane_prefix_cache_lookups_total. modelplane_responses_total, from
+# vllm:request_success_total, counts vLLM's finished requests by how they ended,
+# and can differ slightly from this count, as on aborted requests. Dashboards
+# count requests with modelplane_engine_requests_total, which every engine has.
 # SGLang v0.5.10 publishes these histograms only with
 # --collect-tokens-histogram as well as --enable-metrics; from v0.5.12 it
 # always does.

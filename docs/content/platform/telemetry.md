@@ -46,9 +46,7 @@ combination is right follows from what the metric measures:
  - `sum by (deployment)`, for anything counted, such as requests, tokens, or queue depth.
  - `avg by (deployment)`, for a ratio.
  - `max by (deployment)`, for a saturation figure you alert on.
- - `sum by (le)` inside `histogram_quantile`, for a histogram. Each `modelplane_*`
-   histogram comes from one component with one set of buckets, so a quantile across
-   the whole fleet is sound.
+ - `sum by (le)` inside `histogram_quantile`, for a histogram.
 
 To combine:
 
@@ -68,12 +66,13 @@ max by (deployment, replica) (modelplane_kv_cache_utilization_ratio)
 turns over on every rolling update, so group by `replica` rather than by `instance`.
 
 A prefill/decode deployment runs some requests on both engines, and both count them.
-The decode engines see every request with its whole prompt, so count requests and
-tokens there:
+The decode engines see every request with its whole prompt, so count requests,
+tokens and how requests ended there:
 
 ```promql
 sum by (deployment) (rate(modelplane_engine_requests_total{phase!="Prefill"}[5m]))
 sum by (deployment) (rate(modelplane_engine_tokens_total{direction="input", phase!="Prefill"}[5m]))
+sum by (deployment, reason) (rate(modelplane_responses_total{phase!="Prefill"}[5m]))
 ```
 
 Some examples of the available metrics:
@@ -322,18 +321,15 @@ scheduled, so an aborted request is missing from SGLang's counts. SGLang's queue
 histogram uses different buckets from vLLM's, so only vLLM populates
 `modelplane_request_queue_seconds`.
 
-Both engines' token counts are histograms, but their buckets differ between the
-engines, and vLLM's also follow each deployment's `--max-model-len`, so Modelplane
-exports only their sums and counts, as `modelplane_engine_tokens_total` and
-`modelplane_engine_requests_total`, which add up correctly across any mix of engines.
-
 vLLM's `vllm:request_success_total` becomes `modelplane_responses_total`, the
 requests the engine finished, with vLLM's `finished_reason` renamed to `reason`:
 `stop`, `length` and `abort` at v0.9.2, and `error` and `repetition` as well from
 v0.23.0. A client that disconnects should end its request as `abort`. If `abort`
 stays at 0 while clients give up, the disconnect isn't reaching the engine, and the
-engine keeps generating output nobody reads. SGLang doesn't publish a counter of how
-its requests ended.
+engine keeps generating output nobody reads. On a prefill/decode deployment, read
+`reason` on `phase!="Prefill"`: the prefill engine generates one token for each
+request it runs, so it reports `length` for every one. SGLang doesn't publish a
+counter of how its requests ended.
 
 The built-in mappings cover what every deployment needs, from the engine versions
 the recipes pin, which is what they're tested against: vLLM v0.9.2, v0.23.0, v0.25.1
@@ -359,26 +355,14 @@ spec:
     to: modelplane_kv_offload_store_seconds_total
   - from: vllm:kv_offload_load_time_total
     to: modelplane_kv_offload_load_seconds_total
-  - from: vllm:kv_offload_cpu_cache_usage_perc
-    to: modelplane_kv_offload_in_transfer_ratio
-  - from: vllm:external_prefix_cache_hits_total
-    to: modelplane_external_prefix_cache_hits_total
-  - from: vllm:external_prefix_cache_queries_total
-    to: modelplane_external_prefix_cache_lookups_total
 ```
-
-A store is the GPU writing KV to the tier and a load is the GPU reading it back, so
-bytes over seconds is the transfer rate. `vllm:kv_offload_cpu_cache_usage_perc` is the
-share of the tier's chunks being moved, not how full the tier is, and vLLM publishes
-nothing that says how full it is. vLLM counts the tokens any KV connector supplies as
-external prefix cache hits, so on a prefill/decode deployment those two counters also
-count the KV a decode engine pulls from prefill.
 
 SGLang publishes `modelplane_requests_running` and `modelplane_requests_waiting` more
 than once per engine under `--enable-priority-scheduling`, once in total and once per
 priority, and once per tensor-parallel rank under
 `--enable-metrics-for-all-schedulers`. With either flag, a sum over them counts each
-request more than once. Keeping only one of those series is tracked in #549.
+request more than once. Keeping only one of those series is tracked in
+[#549](https://github.com/modelplaneai/modelplane/issues/549).
 
 Because the gateway, not the engine, measures the `modelplane_frontend_*` series, they
 work without configuration for an engine Modelplane has never seen.
@@ -535,10 +519,7 @@ spec:
 ```
 
 DCGM samples PCIe traffic as a rate, in bytes per second, so read the two PCIe series
-as they are and don't take `rate()` of them. The GPU Operator's metrics configuration
-types them as counters, so on a cluster running it a Prometheus backend adds `_total`
-to their names. GKE's managed exporter types them as gauges, and doesn't publish SM
-occupancy.
+as they are and don't take `rate()` of them.
 
 ## Why engine latency and gateway latency differ
 

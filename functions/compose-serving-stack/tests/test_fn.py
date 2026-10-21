@@ -1623,6 +1623,8 @@ def _collector_config(
                         "statements": [
                             'set(datapoint.attributes["direction"], "input") where metric.name == "vllm:request_prompt_tokens_sum"',
                             'set(datapoint.attributes["direction"], "output") where metric.name == "vllm:request_generation_tokens_sum"',
+                            'set(datapoint.attributes["reason"], datapoint.attributes["finished_reason"]) where metric.name == "vllm:request_success_total"',
+                            'delete_key(datapoint.attributes, "finished_reason") where metric.name == "vllm:request_success_total"',
                             'set(datapoint.attributes["direction"], "input") where metric.name == "sglang:prompt_tokens_histogram_sum"',
                             'set(datapoint.attributes["direction"], "output") where metric.name == "sglang:generation_tokens_histogram_sum"',
                         ],
@@ -1648,6 +1650,7 @@ def _collector_config(
                             'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "vllm:request_prompt_tokens_sum"',
                             'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "vllm:request_generation_tokens_sum"',
                             'set(metric.name, "modelplane_engine_requests_total") where metric.name == "vllm:request_prompt_tokens_count"',
+                            'set(metric.name, "modelplane_responses_total") where metric.name == "vllm:request_success_total"',
                             'set(metric.name, "modelplane_requests_running") where metric.name == "sglang:num_running_reqs"',
                             'set(metric.name, "modelplane_requests_waiting") where metric.name == "sglang:num_queue_reqs"',
                             'set(metric.name, "modelplane_kv_cache_utilization_ratio") where metric.name == "sglang:token_usage"',
@@ -4504,7 +4507,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="d5164b22a8bbe514",
+                        config_hash="621ccfac7cdd6dcb",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -4861,7 +4864,7 @@ COMPOSE_CASES = [
                         ready=fnv1.READY_TRUE,
                     ),
                     "collector": _collector(
-                        config_hash="b3b8d645dc4bb7f7",
+                        config_hash="f42b12acccdf7543",
                         volumes=[
                             {"name": "config", "configMap": {"name": "modelplane-collector"}},
                             {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -5186,7 +5189,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="2f0c5ed29d1ce340",
+                        config_hash="cda67908e5ed4c20",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -5487,7 +5490,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="c83372ef2a8febb9",
+                        config_hash="af47e96adbc381d6",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,
@@ -5816,7 +5819,7 @@ COMPOSE_CASES = [
                         service_extensions=None,
                     ),
                     "collector": _collector(
-                        config_hash="d5164b22a8bbe514",
+                        config_hash="621ccfac7cdd6dcb",
                         volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                         volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                         env_from=None,

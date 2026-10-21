@@ -128,6 +128,18 @@ _GPU_UNITS = {
 }
 
 
+# How each request vLLM finished ended, by vLLM's finished_reason renamed to
+# reason: stop, length and abort at v0.9.2, and error and repetition as well
+# from v0.23.0. A client that disconnects should end its request as abort, so abort
+# staying at 0 while clients give up means the disconnect isn't reaching the
+# engine. SGLang publishes no counter by how a request ended.
+_VLLM_RESPONSES: dict[str, object] = {
+    "from": "vllm:request_success_total",
+    "to": "modelplane_responses_total",
+    "labels": [{"name": "reason", "from": "finished_reason"}],
+}
+
+
 def _tokens(prompt: str, generation: str) -> list[dict[str, object]]:
     """An engine's token histograms as tokens by direction, and requests."""
     return [
@@ -152,6 +164,7 @@ def _mapping(
     pairs: dict[str, str],
     units: dict[str, str] | None = None,
     tokens: tuple[str, str] | None = None,
+    extra: tuple[dict[str, object], ...] = (),
 ) -> v1alpha1.MetricMapping:
     units = units or {}
     metrics: list[dict[str, object]] = [
@@ -159,6 +172,7 @@ def _mapping(
     ]
     if tokens:
         metrics += _tokens(*tokens)
+    metrics += extra
     return v1alpha1.MetricMapping(
         metadata=metav1.ObjectMeta(name=name),
         spec=v1alpha1.Spec(metrics=[v1alpha1.Metric.model_validate(m) for m in metrics]),
@@ -175,7 +189,7 @@ def mappings() -> list[v1alpha1.MetricMapping]:
     return [
         _mapping("modelplane-gateway", _GATEWAY),
         _mapping("modelplane-gateway-proxy", _GATEWAY_PROXY),
-        _mapping("modelplane-vllm", _VLLM, tokens=_VLLM_TOKENS),
+        _mapping("modelplane-vllm", _VLLM, tokens=_VLLM_TOKENS, extra=(_VLLM_RESPONSES,)),
         _mapping("modelplane-sglang", _SGLANG, tokens=_SGLANG_TOKENS),
         _mapping("modelplane-picker", _PICKER),
         _mapping("modelplane-gpu", _GPU, _GPU_UNITS),

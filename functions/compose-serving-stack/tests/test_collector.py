@@ -446,6 +446,8 @@ def _config(
                         "statements": [
                             'set(datapoint.attributes["direction"], "input") where metric.name == "vllm:request_prompt_tokens_sum"',
                             'set(datapoint.attributes["direction"], "output") where metric.name == "vllm:request_generation_tokens_sum"',
+                            'set(datapoint.attributes["reason"], datapoint.attributes["finished_reason"]) where metric.name == "vllm:request_success_total"',
+                            'delete_key(datapoint.attributes, "finished_reason") where metric.name == "vllm:request_success_total"',
                             'set(datapoint.attributes["direction"], "input") where metric.name == "sglang:prompt_tokens_histogram_sum"',
                             'set(datapoint.attributes["direction"], "output") where metric.name == "sglang:generation_tokens_histogram_sum"',
                         ],
@@ -471,6 +473,7 @@ def _config(
                             'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "vllm:request_prompt_tokens_sum"',
                             'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "vllm:request_generation_tokens_sum"',
                             'set(metric.name, "modelplane_engine_requests_total") where metric.name == "vllm:request_prompt_tokens_count"',
+                            'set(metric.name, "modelplane_responses_total") where metric.name == "vllm:request_success_total"',
                             'set(metric.name, "modelplane_requests_running") where metric.name == "sglang:num_running_reqs"',
                             'set(metric.name, "modelplane_requests_waiting") where metric.name == "sglang:num_queue_reqs"',
                             'set(metric.name, "modelplane_kv_cache_utilization_ratio") where metric.name == "sglang:token_usage"',
@@ -913,6 +916,8 @@ STATEMENTS_CASES = [
             [
                 'set(datapoint.attributes["direction"], "input") where metric.name == "vllm:request_prompt_tokens_sum"',
                 'set(datapoint.attributes["direction"], "output") where metric.name == "vllm:request_generation_tokens_sum"',
+                'set(datapoint.attributes["reason"], datapoint.attributes["finished_reason"]) where metric.name == "vllm:request_success_total"',
+                'delete_key(datapoint.attributes, "finished_reason") where metric.name == "vllm:request_success_total"',
                 'set(datapoint.attributes["direction"], "input") where metric.name == "sglang:prompt_tokens_histogram_sum"',
                 'set(datapoint.attributes["direction"], "output") where metric.name == "sglang:generation_tokens_histogram_sum"',
             ],
@@ -935,6 +940,7 @@ STATEMENTS_CASES = [
                 'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "vllm:request_prompt_tokens_sum"',
                 'set(metric.name, "modelplane_engine_tokens_total") where metric.name == "vllm:request_generation_tokens_sum"',
                 'set(metric.name, "modelplane_engine_requests_total") where metric.name == "vllm:request_prompt_tokens_count"',
+                'set(metric.name, "modelplane_responses_total") where metric.name == "vllm:request_success_total"',
                 # Not SGLang's latency histograms, sglang:time_to_first_token_seconds
                 # and sglang:inter_token_latency: their buckets resolve to 100ms
                 # where vLLM's resolve to 1ms.
@@ -1156,7 +1162,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="a95e9ffdf5cd3065",
+                    config_hash="3df8b0bd95ab523b",
                     volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                     volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                     env_from=None,
@@ -1201,7 +1207,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="36ab256fb65b0609",
+                    config_hash="1e23f5eddc51c964",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -1268,7 +1274,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="7a8fea535fb5f978",
+                    config_hash="08d9b4100a5a050c",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-vendor", "secret": {"secretName": "vendor-token"}},

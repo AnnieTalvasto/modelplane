@@ -719,7 +719,8 @@ GPU-to-replica binding, and a backend joins DCGM's figures through it. Every cos
 efficiency question in this design is that join.
 
 `modelplane_responses_total{reason}` is the one that catches a truncation. `reason` is how
-generation ended, `stop` or `length` or `tool_calls`, and a response cut off at the token
+generation ended, as vLLM reports it: `stop`, `length`, `abort`, `error` or `repetition`. It
+also catches a client that left: its request should end as `abort`. A response cut off at the token
 cap reports `length` while still returning 200 with a well-formed body. Every layer above
 reads that as success. A timeout severing a stream produces the same shape from the other
 direction: a 200, valid output, and no terminal event. So the rate of `length` against the

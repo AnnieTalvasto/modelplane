@@ -97,7 +97,6 @@ measured at the gateway. The engine's own series are what the engine spent. For
 example, if the frontend metric is slow and the engine isn't, you can 
 troubleshoot routing, queueing, or networking issues instead of the model.
 
-
 Saturation gauges are per replica, so how you combine them decides what you see. Average
 across a deployment to plan capacity, and take the maximum to alert: three replicas at 0.3
 and one at 0.99 average to something comfortable while the fourth evicts and recomputes. A
@@ -327,6 +326,14 @@ Both engines' token counts are histograms, but their buckets differ between the
 engines, and vLLM's also follow each deployment's `--max-model-len`, so Modelplane
 exports only their sums and counts, as `modelplane_engine_tokens_total` and
 `modelplane_engine_requests_total`, which add up correctly across any mix of engines.
+
+vLLM's `vllm:request_success_total` becomes `modelplane_responses_total`, the
+requests the engine finished, with vLLM's `finished_reason` renamed to `reason`:
+`stop`, `length` and `abort` at v0.9.2, and `error` and `repetition` as well from
+v0.23.0. A client that disconnects should end its request as `abort`. If `abort`
+stays at 0 while clients give up, the disconnect isn't reaching the engine, and the
+engine keeps generating output nobody reads. SGLang doesn't publish a counter of how
+its requests ended.
 
 The built-in mappings cover what every deployment needs, from the engine versions
 the recipes pin, which is what they're tested against: vLLM v0.9.2, v0.23.0, v0.25.1

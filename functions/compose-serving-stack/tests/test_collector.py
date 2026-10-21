@@ -57,6 +57,18 @@ class PortRewriteCase:
 
 
 @dataclasses.dataclass
+class InFlightCase:
+    """A test case for what a job's metric relabeling does to a series of requests in flight."""
+
+    name: str
+    reason: str
+    job: str
+    series: dict[str, str]
+    # The series' labels after relabeling, or None if it's dropped.
+    want: dict[str, str] | None
+
+
+@dataclasses.dataclass
 class StatementsCase:
     """A test case for collector.statements."""
 
@@ -218,6 +230,50 @@ def _config(
                                     "target_label": "__metrics_path__",
                                     "regex": "(.+)",
                                 },
+                                {
+                                    "source_labels": [
+                                        "__meta_kubernetes_pod_label_gateway_envoyproxy_io_owning_gateway_name"
+                                    ],
+                                    "target_label": "gateway",
+                                },
+                            ],
+                            "metric_relabel_configs": [
+                                {
+                                    "source_labels": ["__name__", "envoy_cluster_name", "gateway"],
+                                    "regex": "envoy_cluster_upstream_rq_active;httproute/(mp-[^/]+)/([^/]+)/rule/0;inference-gateway",
+                                    "target_label": "__tmp_model",
+                                    "replacement": "true",
+                                },
+                                {
+                                    "source_labels": ["__name__", "__tmp_model"],
+                                    "regex": "envoy_cluster_upstream_rq_active;",
+                                    "action": "drop",
+                                },
+                                {
+                                    "source_labels": ["__name__", "envoy_cluster_name"],
+                                    "regex": "envoy_cluster_upstream_rq_active;httproute/(mp-[^/]+)/([^/]+)/rule/0",
+                                    "target_label": "namespace",
+                                    "replacement": "$1",
+                                },
+                                {
+                                    "source_labels": ["__name__", "envoy_cluster_name"],
+                                    "regex": "envoy_cluster_upstream_rq_active;httproute/(mp-[^/]+)/([^/]+)/rule/0",
+                                    "target_label": "service",
+                                    "replacement": "$2",
+                                },
+                                {
+                                    "source_labels": ["__name__"],
+                                    "regex": "envoy_cluster_upstream_rq_active",
+                                    "target_label": "envoy_cluster_name",
+                                    "replacement": "",
+                                },
+                                {
+                                    "source_labels": ["__name__"],
+                                    "regex": "envoy_cluster_upstream_rq_active",
+                                    "target_label": "__tmp_model",
+                                    "replacement": "",
+                                },
+                                {"target_label": "gateway", "replacement": ""},
                             ],
                         },
                         # A target of the gateway's own: its GenAI metrics are on
@@ -314,6 +370,13 @@ def _config(
                                 },
                                 {"source_labels": ["__meta_kubernetes_namespace"], "target_label": "namespace"},
                             ],
+                            "metric_relabel_configs": [
+                                {
+                                    "source_labels": ["__name__"],
+                                    "regex": "envoy_cluster_upstream_rq_active",
+                                    "action": "drop",
+                                },
+                            ],
                         },
                     ]
                 }
@@ -366,6 +429,7 @@ def _config(
                             'set(metric.name, "modelplane_frontend_request_duration_seconds") where metric.name == "gen_ai_server_request_duration_seconds"',
                             'set(metric.name, "modelplane_frontend_ttft_seconds") where metric.name == "gen_ai_server_time_to_first_token_seconds"',
                             'set(metric.name, "modelplane_frontend_tpot_seconds") where metric.name == "gen_ai_server_time_per_output_token_seconds"',
+                            'set(metric.name, "modelplane_frontend_requests_active") where metric.name == "envoy_cluster_upstream_rq_active"',
                             'set(metric.name, "modelplane_request_ttft_seconds") where metric.name == "vllm:time_to_first_token_seconds"',
                             'set(metric.name, "modelplane_request_duration_seconds") where metric.name == "vllm:e2e_request_latency_seconds"',
                             'set(metric.name, "modelplane_request_queue_seconds") where metric.name == "vllm:request_queue_time_seconds"',
@@ -687,6 +751,113 @@ def test_port_rewrite(case: PortRewriteCase) -> None:
     assert got == case.want, case.reason
 
 
+def _metric_relabel(*, rules: list[dict[str, typing.Any]], labels: dict[str, str]) -> dict[str, str] | None:
+    """Apply Prometheus metric relabeling to a series' labels, or return None if it's dropped.
+
+    Covers what the collector's rules use: replace, the default, and drop.
+    """
+    labels = dict(labels)
+    for rule in rules:
+        value = ";".join(labels.get(name, "") for name in rule.get("source_labels", []))
+        matched = re.fullmatch(rule.get("regex", "(.*)"), value)
+        if rule.get("action", "replace") == "drop":
+            if matched:
+                return None
+            continue
+        if not matched:
+            continue
+        got = matched.expand(re.sub(r"\$(\d+)", r"\\g<\1>", rule.get("replacement", "$1")))
+        if got:
+            labels[rule["target_label"]] = got
+        else:
+            labels.pop(rule["target_label"], None)
+    return labels
+
+
+def _rq_active(*, cluster: str, gateway: str) -> dict[str, str]:
+    """An Envoy series of requests in flight, as the gateway job scrapes it."""
+    return {"__name__": "envoy_cluster_upstream_rq_active", "envoy_cluster_name": cluster, "gateway": gateway}
+
+
+IN_FLIGHT_CASES = [
+    InFlightCase(
+        name="FleetModel",
+        reason="The fleet gateway's cluster for a ModelService's route is kept, with only its namespace and service.",
+        job="modelplane-gateway",
+        series=_rq_active(cluster="httproute/mp-ml-team-51733/qwen/rule/0", gateway="inference-gateway"),
+        want={"__name__": "envoy_cluster_upstream_rq_active", "namespace": "mp-ml-team-51733", "service": "qwen"},
+    ),
+    InFlightCase(
+        name="SecondRule",
+        reason="Only rule 0 is counted, because it's the only rule compose_route gives a route.",
+        job="modelplane-gateway",
+        series=_rq_active(cluster="httproute/mp-ml-team-51733/qwen/rule/1", gateway="inference-gateway"),
+        want=None,
+    ),
+    InFlightCase(
+        name="ClusterGateway",
+        reason="A cluster gateway's copy of the same requests is dropped, so a sum counts each request once.",
+        job="modelplane-gateway",
+        series=_rq_active(cluster="httproute/mp-ml-team-51733/qwen-34d80/rule/0", gateway="cluster-gateway"),
+        want=None,
+    ),
+    InFlightCase(
+        name="NotAModel",
+        reason="A route in modelplane-system, such as Grafana's, isn't a model and is dropped.",
+        job="modelplane-gateway",
+        series=_rq_active(cluster="httproute/modelplane-system/grafana/rule/0", gateway="inference-gateway"),
+        want=None,
+    ),
+    InFlightCase(
+        name="EnvoyCluster",
+        reason="A cluster Envoy builds for itself is dropped.",
+        job="modelplane-gateway",
+        series=_rq_active(cluster="xds_cluster", gateway="inference-gateway"),
+        want=None,
+    ),
+    InFlightCase(
+        name="OtherEnvoyStat",
+        reason="Another Envoy statistic passes through untouched, except that it loses the gateway target label.",
+        job="modelplane-gateway",
+        series={
+            "__name__": "envoy_cluster_upstream_rq_total",
+            "envoy_cluster_name": "xds_cluster",
+            "gateway": "inference-gateway",
+        },
+        want={"__name__": "envoy_cluster_upstream_rq_total", "envoy_cluster_name": "xds_cluster"},
+    ),
+    InFlightCase(
+        name="SubstrateEnvoy",
+        reason="Another Envoy's requests in flight, such as an Istio sidecar's, are dropped rather than mapped as the gateway's.",
+        job="modelplane-substrate",
+        series={
+            "__name__": "envoy_cluster_upstream_rq_active",
+            "envoy_cluster_name": "outbound|8080||reviews.default.svc.cluster.local",
+            "namespace": "default",
+        },
+        want=None,
+    ),
+]
+
+
+@pytest.mark.parametrize("case", IN_FLIGHT_CASES, ids=lambda case: case.name)
+def test_in_flight(case: InFlightCase) -> None:
+    """Only the fleet gateway's requests in flight to each model are kept, labelled by namespace and service."""
+    # Like test_port_rewrite, this checks what the rules do to a series, which
+    # comparing the config can't, so it applies a job's rules from a rendered config.
+    config = yaml.safe_load(
+        collector.config(
+            "prod-us-east",
+            list(stacks.BUILTIN_MAPPINGS),
+            [_sink(name="primary", type_="otlphttp", secret=None)],
+            {"oauth2client/acme": {"token_url": "https://issuer.acme.example/token"}},
+        )
+    )
+    job = next(j for j in config["receivers"]["prometheus"]["config"]["scrape_configs"] if j["job_name"] == case.job)
+    got = _metric_relabel(rules=job["metric_relabel_configs"], labels=case.series)
+    assert got == case.want, case.reason
+
+
 STATEMENTS_CASES = [
     # The built-in mappings, read from the stacks package rather than restated,
     # because what the collector compiles them to is what this case pins.
@@ -705,6 +876,7 @@ STATEMENTS_CASES = [
                 'set(metric.name, "modelplane_frontend_request_duration_seconds") where metric.name == "gen_ai_server_request_duration_seconds"',
                 'set(metric.name, "modelplane_frontend_ttft_seconds") where metric.name == "gen_ai_server_time_to_first_token_seconds"',
                 'set(metric.name, "modelplane_frontend_tpot_seconds") where metric.name == "gen_ai_server_time_per_output_token_seconds"',
+                'set(metric.name, "modelplane_frontend_requests_active") where metric.name == "envoy_cluster_upstream_rq_active"',
                 'set(metric.name, "modelplane_request_ttft_seconds") where metric.name == "vllm:time_to_first_token_seconds"',
                 'set(metric.name, "modelplane_request_duration_seconds") where metric.name == "vllm:e2e_request_latency_seconds"',
                 'set(metric.name, "modelplane_request_queue_seconds") where metric.name == "vllm:request_queue_time_seconds"',
@@ -937,7 +1109,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="55bc4445ed790fa2",
+                    config_hash="679472c1b4d636ce",
                     volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                     volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                     env_from=None,
@@ -982,7 +1154,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="5b3619d55150aa79",
+                    config_hash="be85359e2c4b6ae1",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -1049,7 +1221,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="5097b903785819b1",
+                    config_hash="60131a0bfa68e4a6",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-vendor", "secret": {"secretName": "vendor-token"}},

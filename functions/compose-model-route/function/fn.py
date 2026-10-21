@@ -760,7 +760,10 @@ class Composer:
         """The AIGatewayRoute matching this service's model name.
 
         One rule, matching the model header exactly, because only exact matches
-        appear in the gateway's /v1/models.
+        appear in the gateway's /v1/models. The serving stack's collector counts
+        requests in flight to a model on this rule alone, by the name Envoy gives
+        its cluster (compose-serving-stack's collector._MODEL_ROUTE), so a second
+        rule would go uncounted there.
 
         Every ready endpoint is a backendRef carrying its own weight, priority
         and upstream model name, so the request that wins is translated for

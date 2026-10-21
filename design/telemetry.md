@@ -604,6 +604,7 @@ separate those from a slow model.
 | `modelplane_frontend_request_duration_seconds` | histogram | fleet gateway |
 | `modelplane_frontend_ttft_seconds` | histogram | fleet gateway, streaming only |
 | `modelplane_frontend_tpot_seconds` | histogram | fleet gateway |
+| `modelplane_frontend_requests_active` | gauge | fleet gateway, per service |
 | `modelplane_requests_total{status}` | counter | fleet gateway |
 | `modelplane_tokens_total{direction}` | counter | fleet gateway |
 | `modelplane_requests_throttled_total` | counter | Envoy rate limits |

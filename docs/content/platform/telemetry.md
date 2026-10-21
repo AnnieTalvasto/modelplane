@@ -328,6 +328,45 @@ engines, and vLLM's also follow each deployment's `--max-model-len`, so Modelpla
 exports only their sums and counts, as `modelplane_engine_tokens_total` and
 `modelplane_engine_requests_total`, which add up correctly across any mix of engines.
 
+The built-in mappings cover what every deployment needs, from the engine versions
+the recipes pin, which is what they're tested against: vLLM v0.9.2, v0.23.0, v0.25.1
+and v0.27.1, and SGLang v0.5.10 and v0.5.12. Metrics for a feature you turn on, such
+as speculative decoding or a KV offload tier, aren't among them. Write a
+`MetricMapping` for those alongside the deployment that turns the feature on. The
+speculative decoding variant of the [Qwen3-8B recipe]({{< ref "/recipes/qwen3-8b.md#speculative-decoding" >}})
+includes one. For a KV offload tier, which vLLM runs from v0.27.1 with
+`--kv-offloading-backend`:
+
+```yaml
+apiVersion: modelplane.ai/v1alpha1
+kind: MetricMapping
+metadata:
+  name: vllm-kv-offload
+spec:
+  metrics:
+  - from: vllm:kv_offload_store_bytes_total
+    to: modelplane_kv_offload_store_bytes_total
+  - from: vllm:kv_offload_load_bytes_total
+    to: modelplane_kv_offload_load_bytes_total
+  - from: vllm:kv_offload_store_time_total
+    to: modelplane_kv_offload_store_seconds_total
+  - from: vllm:kv_offload_load_time_total
+    to: modelplane_kv_offload_load_seconds_total
+  - from: vllm:kv_offload_cpu_cache_usage_perc
+    to: modelplane_kv_offload_in_transfer_ratio
+  - from: vllm:external_prefix_cache_hits_total
+    to: modelplane_external_prefix_cache_hits_total
+  - from: vllm:external_prefix_cache_queries_total
+    to: modelplane_external_prefix_cache_lookups_total
+```
+
+A store is the GPU writing KV to the tier and a load is the GPU reading it back, so
+bytes over seconds is the transfer rate. `vllm:kv_offload_cpu_cache_usage_perc` is the
+share of the tier's chunks being moved, not how full the tier is, and vLLM publishes
+nothing that says how full it is. vLLM counts the tokens any KV connector supplies as
+external prefix cache hits, so on a prefill/decode deployment those two counters also
+count the KV a decode engine pulls from prefill.
+
 SGLang publishes `modelplane_requests_running` and `modelplane_requests_waiting` more
 than once per engine under `--enable-priority-scheduling`, once in total and once per
 priority, and once per tensor-parallel rank under
@@ -439,12 +478,13 @@ Don't run two exporters: the collector scrapes every matching pod and would
 collect each GPU twice.
 
 The exporter's metrics ConfigMap decides which DCGM fields it publishes.
-Modelplane maps seven to the `modelplane_*` surface and converts units where
+Modelplane maps eight to the `modelplane_*` surface and converts units where
 DCGM reports in different ones:
 
 | DCGM field | Becomes | Unit |
 | --- | --- | --- |
 | `DCGM_FI_DEV_FB_USED` | `modelplane_gpu_memory_used_bytes` | MiB, converted to bytes |
+| `DCGM_FI_DEV_FB_FREE` | `modelplane_gpu_memory_free_bytes` | MiB, converted to bytes |
 | `DCGM_FI_PROF_GR_ENGINE_ACTIVE` | `modelplane_gpu_compute_active_ratio` | ratio |
 | `DCGM_FI_PROF_PIPE_TENSOR_ACTIVE` | `modelplane_gpu_tensor_active_ratio` | ratio |
 | `DCGM_FI_PROF_DRAM_ACTIVE` | `modelplane_gpu_memory_bandwidth_ratio` | ratio |
@@ -452,20 +492,46 @@ DCGM reports in different ones:
 | `DCGM_FI_DEV_POWER_USAGE` | `modelplane_gpu_power_watts` | watts |
 | `DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION` | `modelplane_energy_joules_total` | millijoules, converted to joules |
 
-Recent default exporter configurations publish all seven, but older ones left
-the `DCGM_FI_PROF_*` profiling fields out. Check what yours publishes - a
+Recent default exporter configurations publish all eight, but older ones left the
+`DCGM_FI_PROF_*` profiling fields out. Check what yours publishes - a
 missing field means its `modelplane_*` series is silently empty:
 
 ```bash
 kubectl port-forward -n <exporter-namespace> ds/<exporter> 9400:9400 &
 curl -s localhost:9400/metrics | grep -c -E \
-  'DCGM_FI_DEV_FB_USED|DCGM_FI_PROF_GR_ENGINE_ACTIVE|DCGM_FI_PROF_PIPE_TENSOR_ACTIVE|DCGM_FI_PROF_DRAM_ACTIVE|DCGM_FI_DEV_GPU_TEMP|DCGM_FI_DEV_POWER_USAGE|DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION'
+  'DCGM_FI_DEV_FB_(USED|FREE)|DCGM_FI_PROF_(GR_ENGINE_ACTIVE|PIPE_TENSOR_ACTIVE|DRAM_ACTIVE)|DCGM_FI_DEV_(GPU_TEMP|POWER_USAGE|TOTAL_ENERGY_CONSUMPTION)'
 ```
 
 If fields are missing, extend the exporter's metrics ConfigMap - on a GPU
 Operator install that's the `dcgmExporter.config` chart value. The
 configuration Modelplane installs on the clouds it provisions publishes each
 of these fields.
+
+For a question about tensor parallelism over PCIe, map DCGM's PCIe and SM fields
+too:
+
+```yaml
+apiVersion: modelplane.ai/v1alpha1
+kind: MetricMapping
+metadata:
+  name: dcgm-interconnect
+spec:
+  metrics:
+  - from: DCGM_FI_PROF_PCIE_TX_BYTES
+    to: modelplane_gpu_pcie_transmit_bytes_per_second
+  - from: DCGM_FI_PROF_PCIE_RX_BYTES
+    to: modelplane_gpu_pcie_receive_bytes_per_second
+  - from: DCGM_FI_PROF_SM_ACTIVE
+    to: modelplane_gpu_sm_active_ratio
+  - from: DCGM_FI_PROF_SM_OCCUPANCY
+    to: modelplane_gpu_sm_occupancy_ratio
+```
+
+DCGM samples PCIe traffic as a rate, in bytes per second, so read the two PCIe series
+as they are and don't take `rate()` of them. The GPU Operator's metrics configuration
+types them as counters, so on a cluster running it a Prometheus backend adds `_total`
+to their names. GKE's managed exporter types them as gauges, and doesn't publish SM
+occupancy.
 
 ## Why engine latency and gateway latency differ
 

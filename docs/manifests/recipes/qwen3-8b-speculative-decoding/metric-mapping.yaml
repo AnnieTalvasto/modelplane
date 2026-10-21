@@ -1,0 +1,20 @@
+# Speculative decoding's counters, which Modelplane's built-in mappings leave
+# out because vLLM publishes them only while an engine drafts. A MetricMapping
+# is cluster-scoped and reaches every inference cluster's collector, so one
+# applies to every deployment that drafts.
+#
+# Drafts proposed, tokens drafted, and tokens accepted by draft position (vLLM's
+# position label, where 0 is the first guess). Accepted tokens over drafts, by
+# position, is what to read when choosing num_speculative_tokens.
+apiVersion: modelplane.ai/v1alpha1
+kind: MetricMapping
+metadata:
+  name: vllm-speculative-decoding
+spec:
+  metrics:
+  - from: vllm:spec_decode_num_drafts_total
+    to: modelplane_spec_decode_drafts_total
+  - from: vllm:spec_decode_num_draft_tokens_total
+    to: modelplane_spec_decode_draft_tokens_total
+  - from: vllm:spec_decode_num_accepted_tokens_per_pos_total
+    to: modelplane_spec_decode_accepted_tokens_total

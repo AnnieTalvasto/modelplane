@@ -644,6 +644,7 @@ separate those from a slow model.
 | Metric | Type | Source |
 |---|---|---|
 | `modelplane_gpu_memory_used_bytes` | gauge | GPU exporter |
+| `modelplane_gpu_memory_free_bytes` | gauge | GPU exporter |
 | `modelplane_gpu_compute_active_ratio` | gauge (0 to 1) | GPU exporter |
 | `modelplane_gpu_tensor_active_ratio` | gauge (0 to 1) | GPU exporter |
 | `modelplane_gpu_memory_bandwidth_ratio` | gauge (0 to 1) | GPU exporter |

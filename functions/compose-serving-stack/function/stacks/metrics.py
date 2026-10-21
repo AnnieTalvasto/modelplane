@@ -108,10 +108,11 @@ _PICKER = {
 }
 
 # The GPUs, through whichever vendor's exporter the stack installed. DCGM
-# reports framebuffer memory in MiB and energy in millijoules, and both are
-# renamed onto a name that claims a different unit, so both say so.
+# reports framebuffer memory in MiB and energy in millijoules, and each is
+# renamed onto a name that claims a different unit, so each says so.
 _GPU = {
     "DCGM_FI_DEV_FB_USED": "modelplane_gpu_memory_used_bytes",
+    "DCGM_FI_DEV_FB_FREE": "modelplane_gpu_memory_free_bytes",
     "DCGM_FI_PROF_GR_ENGINE_ACTIVE": "modelplane_gpu_compute_active_ratio",
     "DCGM_FI_PROF_PIPE_TENSOR_ACTIVE": "modelplane_gpu_tensor_active_ratio",
     "DCGM_FI_PROF_DRAM_ACTIVE": "modelplane_gpu_memory_bandwidth_ratio",
@@ -122,6 +123,7 @@ _GPU = {
 
 _GPU_UNITS = {
     "DCGM_FI_DEV_FB_USED": "Mebibytes",
+    "DCGM_FI_DEV_FB_FREE": "Mebibytes",
     "DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION": "Millijoules",
 }
 

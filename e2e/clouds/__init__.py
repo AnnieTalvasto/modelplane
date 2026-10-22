@@ -119,7 +119,11 @@ CLOUDS: dict[str, Cloud] = {
     # plugin; cloud.google.com/gke-nvidia-gpu-dra-driver is what the
     # autoscaler models DRA ResourceSlices from). The taint is GKE's own
     # managed GPU taint (value "present"); the GKE stack tolerates it with
-    # operator: Exists, so the value only matters for fidelity.
+    # operator: Exists, so the value only matters for fidelity. GKE is the
+    # one cloud whose stack enables the GPU operator's container toolkit
+    # (COS's driver installer ships none), so its daemonset belongs on the
+    # GPU pool - hence the extra expected DaemonSet and gpu_workloads
+    # pattern.
     "gke": Cloud(
         cloud="GKE",
         labels={
@@ -141,7 +145,9 @@ CLOUDS: dict[str, Cloud] = {
             "nvidia-dra-driver/nvidia-dra-driver-gpu-kubelet-plugin": 2,
             "node-feature-discovery/mp-node-feature-discovery-worker": 3,
             "monitoring/prometheus-node-exporter": 3,
+            "gpu-operator/nvidia-container-toolkit-daemonset": 2,
         },
+        gpu_workloads=("^nvidia-container-toolkit",),
     ),
     # The hand-written Civo half (stacks/clouds/civo.py) keeps its charts'
     # default names, like Nebius's. Unlike every other cloud it installs the

@@ -748,12 +748,22 @@ def _to_dict(msg: message.Message) -> dict:
 
 COMPOSE_CASES = [
     # A fatal result leaves the replica's existing resources as they are, so
-    # nothing is composed and no condition changes.
+    # nothing is composed. Crossplane marks any condition the function doesn't
+    # set Unknown, so the conditions still report the pair's observed state.
     Case(
         name="PrefillDecodeRoutingMissing",
-        reason="A PrefillDecode replica without a router or picker config stops with a fatal result and composes nothing.",
+        reason=(
+            "A stored PrefillDecode replica without a router or picker that still serves stops with a fatal result, "
+            "composes nothing, and reports itself accepted and serving."
+        ),
         req=fnv1.RunFunctionRequest(
-            observed=fnv1.State(composite=_prefill_decode_replica(serving=v1alpha1.Serving(mode="PrefillDecode"))),
+            observed=fnv1.State(
+                composite=_prefill_decode_replica(serving=v1alpha1.Serving(mode="PrefillDecode")),
+                resources={
+                    "model-serving-prefill": _observed_deployment(),
+                    "model-serving-decode": _observed_deployment(),
+                },
+            ),
             required_resources={"cluster": fnv1.Resources(items=[_cluster(provider_config_ref="cluster-a-pc")])},
         ),
         want=fnv1.RunFunctionResponse(
@@ -775,6 +785,10 @@ COMPOSE_CASES = [
                     ),
                 },
             ),
+            conditions=[
+                fnv1.Condition(type="ModelAccepted", status=fnv1.STATUS_CONDITION_TRUE, reason="Accepted"),
+                fnv1.Condition(type="ModelReady", status=fnv1.STATUS_CONDITION_TRUE, reason="Serving"),
+            ],
         ),
     ),
     Case(
@@ -810,6 +824,10 @@ COMPOSE_CASES = [
                     ),
                 },
             ),
+            conditions=[
+                fnv1.Condition(type="ModelAccepted", status=fnv1.STATUS_CONDITION_FALSE, reason="Deploying"),
+                fnv1.Condition(type="ModelReady", status=fnv1.STATUS_CONDITION_FALSE, reason="WaitingForModel"),
+            ],
         ),
     ),
     # Modelplane can't tell which container is the disaggregation sidecar, so

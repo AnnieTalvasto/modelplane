@@ -88,8 +88,7 @@ class Composer:
     def compose(self) -> None:
         if not self.resolve_inputs():
             return
-        if not self.compose_model_serving():
-            return
+        self.compose_model_serving()
         self.derive_conditions()
 
     def resolve_inputs(self) -> bool:
@@ -143,16 +142,16 @@ class Composer:
 
         return True
 
-    def compose_model_serving(self) -> bool:
+    def compose_model_serving(self) -> None:
         """Compose each engine's workload, then the replica's routing surface.
 
         Every engine composes to a Deployment, LeaderWorkerSet, or PodCliqueSet (with its
         members' ResourceClaimTemplates) via the backend its roles select; the
         backends build no routing. routing.apply then fronts the engines with an
         InferencePool and endpoint picker, whose scoring serving.mode selects.
-        Everything lands in the namespace mirroring the replica's own. Returns
-        False, having set a fatal result, when a PrefillDecode replica lacks its
-        routing.
+        Everything lands in the namespace mirroring the replica's own. A
+        PrefillDecode replica that lacks its routing gets a fatal result and
+        composes nothing.
         """
         # resolve_inputs runs first and returns False unless the cluster's
         # status.providerConfigRef.name is set, so it's present here.
@@ -171,7 +170,7 @@ class Composer:
                 self.rsp,
                 "PrefillDecode serving requires serving.router: EndpointPicker and serving.endpointPicker",
             )
-            return False
+            return
         if routing.decode_without_sidecar(self.xr):
             response.warning(
                 self.rsp,
@@ -186,7 +185,11 @@ class Composer:
         composed = routing.apply(composed, self.xr, pc)
         for key, obj in composed.items():
             resource.update(self.rsp.desired.resources[key], obj)
-        return True
+        # First-time transition: emit a normal event the first reconcile, before
+        # any workload is observed.
+        if not any(k in self.req.observed.resources for k in base.workload_keys(self.xr)):
+            image = base.engine_container(self.xr.spec.engines[0].members[0]).image
+            response.normal(self.rsp, f"Composing {image} on {self.xr.spec.clusterName}")
 
     def derive_conditions(self) -> None:
         """Derive ModelAccepted and ModelReady across all of the replica's engines.
@@ -197,15 +200,6 @@ class Composer:
         all must be up for the replica to serve.
         """
         workload_keys = base.workload_keys(self.xr)
-
-        # First-time transition: emit a normal event the first reconcile, before
-        # any workload is observed.
-        if not any(k in self.req.observed.resources for k in workload_keys):
-            image = base.engine_container(self.xr.spec.engines[0].members[0]).image
-            response.normal(
-                self.rsp,
-                f"Composing {image} on {self.xr.spec.clusterName}",
-            )
 
         # A workload is accepted once provider-kubernetes populates its Object's
         # atProvider.manifest (it observed the remote resource at least once),

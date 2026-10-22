@@ -249,7 +249,7 @@ def decode_without_sidecar(replica: v1alpha1.ModelReplica) -> bool:
     return all(c.name == "engine" for c in member.template.spec.containers)
 
 
-def _default_picker() -> dict[str, Any]:
+def _default_unified_picker() -> dict[str, Any]:
     """The picker container a replica runs when it doesn't set serving.router: llm-d's."""
     return {
         "name": "epp",
@@ -292,7 +292,7 @@ def _picker(
         config_yaml = _render_picker_config(picker.config) if picker.config else None
         return container, config_yaml, secrets
     assert default_config_yaml is not None, "only a Unified replica falls back to the default picker configuration"
-    return _default_picker(), default_config_yaml, []
+    return _default_unified_picker(), default_config_yaml, []
 
 
 def _render_picker_config(config: dict[str, Any]) -> str:

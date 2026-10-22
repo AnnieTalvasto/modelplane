@@ -50,6 +50,7 @@ CONDITION_REASON_ACCEPTED = "Accepted"
 CONDITION_REASON_SERVING = "Serving"
 CONDITION_REASON_DEGRADED = "Degraded"
 CONDITION_REASON_WAITING_FOR_ROUTING = "WaitingForRouting"
+CONDITION_REASON_ROLLING_OUT = "RollingOut"
 CONDITION_REASON_ALL_COPIES_READY = "AllCopiesReady"
 CONDITION_REASON_MODEL_STARTING = "ModelStarting"
 
@@ -222,20 +223,32 @@ class Composer:
         # which leaves nothing desired. Crossplane keeps the existing resources
         # then, so judge the replica on what it observes.
         keys = set(self.rsp.desired.resources) or set(observed)
-        workload = {base.workload_key(e) for e in engines} | {base.scaling_group_key(e) for e in engines}
-        routing_ready = all(ready(k) for k in keys - workload)
+        workloads = {base.workload_key(e) for e in engines} | {base.scaling_group_key(e) for e in engines}
+        # The endpoint picker, the routing in front of it, and the engines'
+        # claim templates.
+        others_ready = all(ready(k) for k in keys - workloads)
+
+        # resolve_inputs ran first, so the cluster is resolved.
+        assert self.ic
+        stack = self.ic.spec.stack or "Standard"
+        copies = {e.name: int(e.copies or 1) for e in engines}
+        ready_copies = {
+            e.name: min(_BACKENDS[base.select_backend(e, stack)]().ready_copies(e, observed), copies[e.name])
+            for e in engines
+        }
 
         accepted = all(self._workload_accepted(base.workload_key(e)) for e in engines)
-        serving = accepted and routing_ready and all(self._copies_ready(e) > 0 for e in engines)
+        copy_each = all(ready_copies[name] > 0 for name in copies)
+        serving = accepted and others_ready and copy_each
         full = serving and all(ready(k) for k in keys)
 
-        copies = sum(int(e.copies or 1) for e in engines)
-        copies_ready = sum(min(self._copies_ready(e), int(e.copies or 1)) for e in engines)
-        copies_msg = f"{copies_ready} of {copies} engine copies ready"
-
-        if serving:
+        if serving and sum(ready_copies.values()) < sum(copies.values()):
             waiting = CONDITION_REASON_DEGRADED
-        elif accepted and all(self._copies_ready(e) > 0 for e in engines):
+        elif serving:
+            # Every copy counts as ready but a workload doesn't yet, as during
+            # a LeaderWorkerSet's rolling update.
+            waiting = CONDITION_REASON_ROLLING_OUT
+        elif accepted and copy_each:
             waiting = CONDITION_REASON_WAITING_FOR_ROUTING
         elif accepted:
             waiting = CONDITION_REASON_MODEL_STARTING
@@ -257,7 +270,7 @@ class Composer:
                 typ=CONDITION_TYPE_MODEL_READY,
                 status="True" if full else "False",
                 reason=CONDITION_REASON_ALL_COPIES_READY if full else waiting,
-                message=copies_msg,
+                message=f"{sum(ready_copies.values())} of {sum(copies.values())} engine copies ready",
             ),
         )
 
@@ -272,35 +285,6 @@ class Composer:
         for key in self.rsp.desired.resources:
             if ready(key):
                 self.rsp.desired.resources[key].ready = fnv1.READY_TRUE
-
-    def _copies_ready(self, engine: v1alpha1.Engine) -> int:
-        """How many copies of an engine are ready, from its observed workload.
-
-        A Deployment counts ready pods and a LeaderWorkerSet ready groups,
-        each one copy. Grove's scaling group counts available copies; until it's
-        observed, a ready PodCliqueSet means at least one copy is.
-        """
-        group = self._observed_status(base.scaling_group_key(engine))
-        if group is not None:
-            return int(group.get("availableReplicas") or 0)
-        key = base.workload_key(engine)
-        status = self._observed_status(key)
-        if status is None:
-            return 0
-        if "readyReplicas" in status:
-            return int(status.get("readyReplicas") or 0)
-        return 1 if resource.get_condition(self.req.observed.resources.get(key), "Ready").status == "True" else 0
-
-    def _observed_status(self, key: str) -> dict | None:
-        """The status of the remote resource an Object observes, or None."""
-        observed = self.req.observed.resources.get(key)
-        if not observed:
-            return None
-        obj = k8sobjv1alpha1.Object.model_validate(resource.struct_to_dict(observed.resource))
-        if not (obj.status and obj.status.atProvider and obj.status.atProvider.manifest):
-            return None
-        status = obj.status.atProvider.manifest.get("status")
-        return status if isinstance(status, dict) else {}
 
     def _workload_accepted(self, key: str) -> bool:
         """Whether a workload Object has been created on the remote cluster.

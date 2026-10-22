@@ -229,7 +229,7 @@ def _cache(*, cluster_selector: dict | None) -> fnv1.Resource:
 def _observed_replica(*, ready: bool | None, serving: bool | None) -> fnv1.Resource:
     """The ModelReplica my-model has on cluster-a, with no conditions if ready is None.
 
-    serving sets its ModelServing condition.
+    Otherwise serving sets its ModelServing condition.
     """
     replica: dict[str, Any] = {
         "apiVersion": "modelplane.ai/v1alpha1",
@@ -397,7 +397,7 @@ COMPOSE_CASES = [
     # (#102).
     ComposeCase(
         name="FreshlyScheduled",
-        reason="A newly scheduled replica composes without an endpoint, because it isn't observed Ready yet.",
+        reason="A newly scheduled replica composes without an endpoint, because it isn't observed serving yet.",
         req=fnv1.RunFunctionRequest(
             observed=fnv1.State(
                 composite=_model_deployment(
@@ -481,16 +481,16 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="ModelStarting",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
     ),
-    # A replica can go not Ready after once serving, say in a crash-loop.
+    # A replica can stop serving after once serving, say in a crash-loop.
     # Deleting its endpoint stops traffic routing to the dead backend (#102).
     ComposeCase(
         name="ReplicaNotReady",
-        reason="A replica observed not Ready loses its endpoint, which is left out of desired so Crossplane deletes it.",
+        reason="A replica observed not serving loses its endpoint, which is left out of desired so Crossplane deletes it.",
         req=fnv1.RunFunctionRequest(
             observed=fnv1.State(
                 composite=_model_deployment(
@@ -572,7 +572,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="ModelStarting",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -685,7 +685,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="NoReplicasScheduled",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -805,7 +805,7 @@ COMPOSE_CASES = [
     ),
     ComposeCase(
         name="ReplicaReady",
-        reason="A replica observed Ready keeps its place and its endpoint, and the deployment reports all replicas ready.",
+        reason="A replica observed serving and Ready keeps its place and its endpoint, and the deployment reports all replicas ready.",
         req=fnv1.RunFunctionRequest(
             observed=fnv1.State(
                 composite=_model_deployment(
@@ -894,7 +894,98 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_TRUE,
                     reason="AllReplicasReady",
-                    message="1 of 1 ready",
+                    message="1 of 1 replicas ready",
+                ),
+            ],
+        ),
+    ),
+    ComposeCase(
+        name="NoGatewayHostname",
+        reason=(
+            "A Ready replica on a cluster whose gateway has no hostname gets no endpoint, so the deployment "
+            "isn't serving or Ready."
+        ),
+        req=fnv1.RunFunctionRequest(
+            observed=fnv1.State(
+                composite=_model_deployment(
+                    replicas=1,
+                    template_labels=None,
+                    cluster_selector=None,
+                    model_cache=None,
+                    serving_mode=None,
+                    endpoint_picker=None,
+                    sidecar=None,
+                    engines=[{"name": "main"}],
+                    args=["--model=Qwen/Qwen3-0.6B"],
+                ),
+                resources={
+                    "replica-cluster-a-0": _observed_replica(ready=True, serving=True),
+                },
+            ),
+            required_resources={
+                "clusters": fnv1.Resources(
+                    items=[
+                        _cluster(
+                            name="cluster-a",
+                            ready=True,
+                            gateway_hostname=None,
+                            nodes=2,
+                            cache_storage=False,
+                            placement_labels=None,
+                        )
+                    ]
+                ),
+                "all-replicas": fnv1.Resources(items=[_observed_replica(ready=None, serving=None)]),
+            },
+        ),
+        want=fnv1.RunFunctionResponse(
+            meta=fnv1.ResponseMeta(ttl=durationpb.Duration(seconds=60)),
+            desired=fnv1.State(
+                composite=_desired_model_deployment(total_replicas=1, ready_replicas=1, ready=fnv1.READY_FALSE),
+                resources={
+                    "replica-cluster-a-0": _composed_replica(
+                        name="my-model-5ab63",
+                        cluster="cluster-a",
+                        labels={
+                            "modelplane.ai/deployment": "my-model",
+                            "modelplane.ai/cluster": "cluster-a",
+                            "modelplane.ai/replica-index": "0",
+                        },
+                        model_cache=None,
+                        serving_mode=None,
+                        endpoint_picker=None,
+                        sidecar=None,
+                        engines=[{"name": "main"}],
+                        args=["--model=Qwen/Qwen3-0.6B"],
+                        ready=fnv1.READY_TRUE,
+                    ),
+                },
+            ),
+            context=structpb.Struct(),
+            requirements=fnv1.Requirements(
+                resources={
+                    "clusters": fnv1.ResourceSelector(api_version="modelplane.ai/v1alpha1", kind="InferenceCluster"),
+                    "all-replicas": fnv1.ResourceSelector(api_version="modelplane.ai/v1alpha1", kind="ModelReplica"),
+                },
+            ),
+            conditions=[
+                fnv1.Condition(
+                    type="ReplicasScheduled",
+                    status=fnv1.STATUS_CONDITION_TRUE,
+                    reason="ReplicasCreated",
+                    message="Scheduled 1 of 1 replicas",
+                ),
+                fnv1.Condition(
+                    type="ReplicasServing",
+                    status=fnv1.STATUS_CONDITION_FALSE,
+                    reason="WaitingForGateway",
+                    message="0 of 1 replicas serving",
+                ),
+                fnv1.Condition(
+                    type="ReplicasReady",
+                    status=fnv1.STATUS_CONDITION_FALSE,
+                    reason="WaitingForGateway",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -990,7 +1081,10 @@ COMPOSE_CASES = [
                     message="1 of 2 replicas serving",
                 ),
                 fnv1.Condition(
-                    type="ReplicasReady", status=fnv1.STATUS_CONDITION_FALSE, reason="Degraded", message="1 of 2 ready"
+                    type="ReplicasReady",
+                    status=fnv1.STATUS_CONDITION_FALSE,
+                    reason="Scheduling",
+                    message="1 of 2 replicas ready",
                 ),
             ],
         ),
@@ -1086,16 +1180,20 @@ COMPOSE_CASES = [
                     message="1 of 1 replicas serving",
                 ),
                 fnv1.Condition(
-                    type="ReplicasReady", status=fnv1.STATUS_CONDITION_FALSE, reason="Degraded", message="0 of 1 ready"
+                    type="ReplicasReady",
+                    status=fnv1.STATUS_CONDITION_FALSE,
+                    reason="Degraded",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
     ),
-    # Either the missing hostname or the missing Ready condition alone would
-    # hold back the endpoint, so this pins neither.
+    # Either the missing hostname or the missing conditions alone would hold
+    # back the endpoint, so this pins neither. NoGatewayHostname pins the
+    # hostname.
     ComposeCase(
         name="ClusterOffline",
-        reason="A replica stays on its cluster while the cluster is offline, and gets no endpoint, with no gateway hostname on the cluster and no Ready condition on the replica.",
+        reason="A replica stays on its cluster while the cluster is offline, and gets no endpoint, with no gateway hostname on the cluster and no conditions on the replica.",
         req=fnv1.RunFunctionRequest(
             observed=fnv1.State(
                 composite=_model_deployment(
@@ -1176,7 +1274,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="ModelStarting",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -1270,7 +1368,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="ModelStarting",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -1371,7 +1469,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="ModelStarting",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -1478,7 +1576,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="ModelStarting",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -1589,7 +1687,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="ModelStarting",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -1705,7 +1803,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="ModelStarting",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -1782,7 +1880,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="NoReplicasScheduled",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -1854,8 +1952,8 @@ COMPOSE_CASES = [
                 fnv1.Condition(
                     type="ReplicasScheduled",
                     status=fnv1.STATUS_CONDITION_FALSE,
-                    reason="InsufficientCapacity",
-                    message="0 of 1 replicas scheduled (checked 1 clusters)",
+                    reason="ModelCacheUnresolved",
+                    message="0 of 1 replicas scheduled: placement waits for ModelCache qwen",
                 ),
                 fnv1.Condition(
                     type="ReplicasServing",
@@ -1867,7 +1965,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="NoReplicasScheduled",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -1878,7 +1976,7 @@ COMPOSE_CASES = [
     # placed replica even while it may not place new ones.
     ComposeCase(
         name="CacheDeleted",
-        reason="When the referenced cache is deleted the running replica keeps its place and endpoint, and ModelCacheResolved reports ModelCacheNotFound.",
+        reason="When the referenced cache is deleted the running replica keeps its place and endpoint, ModelCacheResolved reports ModelCacheNotFound, and the deployment isn't Ready because it can't place a replacement.",
         req=fnv1.RunFunctionRequest(
             observed=fnv1.State(
                 composite=_model_deployment(
@@ -1985,7 +2083,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_TRUE,
                     reason="AllReplicasReady",
-                    message="1 of 1 ready",
+                    message="1 of 1 replicas ready",
                 ),
             ],
         ),
@@ -2092,7 +2190,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="ModelStarting",
-                    message="0 of 2 ready",
+                    message="0 of 2 replicas ready",
                 ),
             ],
         ),
@@ -2231,7 +2329,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="ModelStarting",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -2331,7 +2429,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_TRUE,
                     reason="AllReplicasReady",
-                    message="1 of 1 ready",
+                    message="1 of 1 replicas ready",
                 ),
             ],
         ),
@@ -2427,7 +2525,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="ModelStarting",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),
@@ -2529,7 +2627,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_TRUE,
                     reason="AllReplicasReady",
-                    message="1 of 1 ready",
+                    message="1 of 1 replicas ready",
                 ),
             ],
         ),
@@ -2623,7 +2721,7 @@ COMPOSE_CASES = [
                     type="ReplicasReady",
                     status=fnv1.STATUS_CONDITION_FALSE,
                     reason="ModelStarting",
-                    message="0 of 1 ready",
+                    message="0 of 1 replicas ready",
                 ),
             ],
         ),

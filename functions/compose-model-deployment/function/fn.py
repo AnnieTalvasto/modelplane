@@ -57,6 +57,7 @@ CONDITION_REASON_NO_REPLICAS_SCHEDULED = "NoReplicasScheduled"
 CONDITION_REASON_ALL_REPLICAS_READY = "AllReplicasReady"
 CONDITION_REASON_SERVING = "Serving"
 CONDITION_REASON_DEGRADED = "Degraded"
+CONDITION_REASON_WAITING_FOR_GATEWAY = "WaitingForGateway"
 CONDITION_REASON_MODEL_STARTING = "ModelStarting"
 CONDITION_REASON_NO_REPLICAS_DESIRED = "NoReplicasDesired"
 
@@ -672,8 +673,8 @@ class Composer:
         all_ready = self.derive_replicas_ready(matched)
         self.mark_endpoint_readiness(matched)
 
-        # Left unset when ready, Crossplane still holds the XR unready until
-        # every composed replica and endpoint is.
+        # When ready this is left unset, so Crossplane still holds the XR
+        # unready until every composed replica and endpoint is.
         if not (scheduled and all_ready and self.fill):
             self.rsp.desired.composite.ready = fnv1.READY_FALSE
 
@@ -689,6 +690,9 @@ class Composer:
             # the cache storage filter can have emptied the candidates.
             reason = CONDITION_REASON_NO_CACHE_STORAGE
             msg = f"0 of {desired} replicas scheduled: no candidate cluster has storage for ModelCache {cache_ref.name}"
+        elif len(matched) < desired and not self.fill and cache_ref:
+            reason = CONDITION_REASON_CACHE_UNRESOLVED
+            msg = f"{len(matched)} of {desired} replicas scheduled: placement waits for ModelCache {cache_ref.name}"
         elif not matched:
             reason = CONDITION_REASON_INSUFFICIENT_CAPACITY
             msg = f"0 of {desired} replicas scheduled (checked {len(self.clusters)} clusters)"
@@ -716,10 +720,14 @@ class Composer:
     def derive_replicas_serving(self, matched: list[scheduling.Candidate]) -> None:
         """ReplicasServing: at least one replica is serving and routed."""
         desired = int(self.xr.spec.replicas)
-        serving = sum(1 for c in matched if name.endpoint_key(c) in self.rsp.desired.resources)
+        routed = sum(1 for c in matched if self._routed(c))
 
-        if serving:
+        if routed:
             reason = CONDITION_REASON_SERVING
+        elif any(self._replica_condition(c, _REPLICA_SERVING) for c in matched):
+            # A serving replica gets no endpoint while its cluster's gateway
+            # has no hostname.
+            reason = CONDITION_REASON_WAITING_FOR_GATEWAY
         elif matched:
             reason = CONDITION_REASON_MODEL_STARTING
         else:
@@ -729,31 +737,42 @@ class Composer:
             self.rsp,
             resource.Condition(
                 typ=CONDITION_TYPE_REPLICAS_SERVING,
-                status="True" if serving else "False",
+                status="True" if routed else "False",
                 reason=reason,
-                message=f"{serving} of {desired} replicas serving",
+                message=f"{routed} of {desired} replicas serving",
             ),
         )
 
     def derive_replicas_ready(self, matched: list[scheduling.Candidate]) -> bool:
-        """ReplicasReady: every desired replica is at full capacity."""
+        """ReplicasReady: every desired replica is at full capacity and routed."""
         desired = int(self.xr.spec.replicas)
         replicas_ready = 0
         for c in matched:
-            replica_key = name.replica_key(c)
-            if resource.get_condition(self.req.observed.resources.get(replica_key), "Ready").status == "True":
-                self.rsp.desired.resources[replica_key].ready = fnv1.READY_TRUE
+            if not self._replica_condition(c, "Ready"):
+                continue
+            self.rsp.desired.resources[name.replica_key(c)].ready = fnv1.READY_TRUE
+            if self._routed(c):
                 replicas_ready += 1
 
         all_ready = replicas_ready >= desired
-        serving = any(name.endpoint_key(c) in self.rsp.desired.resources for c in matched)
+        # A replica that serves without being Ready has lost copies, or has
+        # copies it hasn't brought up.
+        degraded = any(
+            self._replica_condition(c, _REPLICA_SERVING) and not self._replica_condition(c, "Ready") for c in matched
+        )
 
+        unrouted = any(self._replica_condition(c, _REPLICA_SERVING) and not self._routed(c) for c in matched)
         if not matched:
             reason = CONDITION_REASON_NO_REPLICAS_SCHEDULED
         elif all_ready:
             reason = CONDITION_REASON_ALL_REPLICAS_READY
-        elif serving:
+        elif degraded:
             reason = CONDITION_REASON_DEGRADED
+        elif unrouted:
+            reason = CONDITION_REASON_WAITING_FOR_GATEWAY
+        elif replicas_ready == len(matched):
+            # Every placed replica is ready; the rest couldn't be placed.
+            reason = CONDITION_REASON_SCHEDULING
         else:
             reason = CONDITION_REASON_MODEL_STARTING
 
@@ -763,10 +782,19 @@ class Composer:
                 typ=CONDITION_TYPE_REPLICAS_READY,
                 status="True" if all_ready else "False",
                 reason=reason,
-                message=f"{replicas_ready} of {desired} ready",
+                message=f"{replicas_ready} of {desired} replicas ready",
             ),
         )
         return all_ready
+
+    def _replica_condition(self, candidate: scheduling.Candidate, typ: str) -> bool:
+        """Whether the replica placed on candidate has condition typ True."""
+        observed = self.req.observed.resources.get(name.replica_key(candidate))
+        return resource.get_condition(observed, typ).status == "True"
+
+    def _routed(self, candidate: scheduling.Candidate) -> bool:
+        """Whether this reconcile composed the replica's ModelEndpoint."""
+        return name.endpoint_key(candidate) in self.rsp.desired.resources
 
     def mark_endpoint_readiness(self, matched: list[scheduling.Candidate]) -> None:
         """Mark each composed ModelEndpoint Ready when observed Ready."""

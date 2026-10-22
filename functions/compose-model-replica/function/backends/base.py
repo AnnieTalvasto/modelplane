@@ -21,9 +21,11 @@ serving resources. Backends return provider-kubernetes Objects; the dispatcher
 
 import hashlib
 import re
+from collections.abc import Mapping
 from typing import Protocol
 
 from crossplane.function import resource
+from crossplane.function.proto.v1 import run_function_pb2 as fnv1
 from models.ai.modelplane.modelreplica import v1alpha1
 from models.io.crossplane.m.kubernetes.object import v1alpha1 as k8sobjv1alpha1
 from models.io.k8s.apimachinery.pkg.apis.meta import v1 as metav1
@@ -54,6 +56,10 @@ class Backend(Protocol):
         serving_label: str,
         stack: str,
     ) -> dict[str, k8sobjv1alpha1.Object]: ...
+
+    def ready_copies(self, engine: v1alpha1.Engine, observed: Mapping[str, fnv1.Resource]) -> int:
+        """How many copies of the engine are ready, from its observed workload."""
+        ...
 
 
 # Backend identifiers.
@@ -468,11 +474,7 @@ def claim_key(engine: v1alpha1.Engine, member: v1alpha1.Member) -> str:
 
 
 def workload_keys(replica: v1alpha1.ModelReplica) -> list[str]:
-    """Response keys of every engine's workload, in engine order.
-
-    fn.py tracks replica readiness across all of these: a replica is serving
-    only when every engine's workload is ready.
-    """
+    """Response keys of every engine's workload, in engine order."""
     return [workload_key(g) for g in replica.spec.engines]
 
 
@@ -519,7 +521,9 @@ GROVE_AVAILABLE_CEL = (
 
 # CEL readiness query for a Grove PodCliqueScalingGroup with every copy
 # available. Its availableReplicas counts the copies whose cliques are all at or
-# above their minAvailable.
+# above their minAvailable. Unlike the PodCliqueSet's query it needs no
+# observedGeneration guard: Grove recounts the group from its cliques on every
+# reconcile, and a spec change to the set doesn't bump the group's generation.
 GROVE_ALL_COPIES_READY_CEL = (
     "has(object.status) && has(object.status.availableReplicas) && "
     "object.status.availableReplicas >= object.spec.replicas"
@@ -563,6 +567,26 @@ def wrap_object(
     if observe_only:
         spec.managementPolicies = ["Observe"]
     return k8sobjv1alpha1.Object(spec=spec)
+
+
+def observed_status(observed: Mapping[str, fnv1.Resource], key: str) -> dict | None:
+    """The status of the remote resource an observed Object reads, or None
+    until provider-kubernetes has observed it."""
+    found = observed.get(key)
+    if not found:
+        return None
+    obj = k8sobjv1alpha1.Object.model_validate(resource.struct_to_dict(found.resource))
+    if not (obj.status and obj.status.atProvider and obj.status.atProvider.manifest):
+        return None
+    status = obj.status.atProvider.manifest.get("status")
+    return status if isinstance(status, dict) else {}
+
+
+def ready_replicas(engine: v1alpha1.Engine, observed: Mapping[str, fnv1.Resource]) -> int:
+    """An engine's ready copies from its Deployment's ready pods or its
+    LeaderWorkerSet's ready groups. Both leave readyReplicas out at 0."""
+    status = observed_status(observed, workload_key(engine)) or {}
+    return int(status.get("readyReplicas") or 0)
 
 
 def serving_label(replica: v1alpha1.ModelReplica) -> str:

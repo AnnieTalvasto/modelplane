@@ -140,10 +140,10 @@ select on.
 
 A picker that rejects its configuration never becomes ready:
 
-- On a new deployment, the replica doesn't become Ready.
+- On a new deployment, the replica doesn't start serving.
 - On a running deployment, the old picker keeps serving with the old
-  configuration. The replica stops being Ready once the picker's rollout passes
-  its progress deadline, 10 minutes by default. The new picker's pod log has
+  configuration. The replica stops serving, and its endpoint is withdrawn, once
+  the picker's rollout passes its progress deadline, 10 minutes by default. The new picker's pod log has
   the reason.
 
 ## The sidecar

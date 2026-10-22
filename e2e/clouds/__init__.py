@@ -43,9 +43,11 @@ class Cloud:
     """The cloud's own GPU node labels, stamped on the fake nodes.
 
     What the cluster composition (or the cloud's platform) puts on a real GPU
-    node, plus the NFD GPU labels (gpu.present, pci-10de.present) NFD's worker
-    would set - pre-set because the worker's pod on a KWOK node is fake and
-    never labels anything.
+    node, plus the NFD labels NFD's worker would set - the GPU presence labels
+    (gpu.present, pci-10de.present) and the OS release labels
+    (system-os_release.ID, system-os_release.VERSION_ID) the GPU operator's
+    ClusterPolicy controller reads from GPU nodes since v26.7 - pre-set because
+    the worker's pod on a KWOK node is fake and never labels anything.
     """
 
     taint_value: str
@@ -74,6 +76,9 @@ CLOUDS: dict[str, Cloud] = {
             "modelplane.ai/gpu": "h100",
             "nvidia.com/gpu.present": "true",
             "feature.node.kubernetes.io/pci-10de.present": "true",
+            # EKS GPU AMIs are AL2023.
+            "feature.node.kubernetes.io/system-os_release.ID": "amzn",
+            "feature.node.kubernetes.io/system-os_release.VERSION_ID": "2023",
         },
         taint_value="true",
         expected_daemonsets={
@@ -96,6 +101,9 @@ CLOUDS: dict[str, Cloud] = {
             "modelplane.ai/gpu": "h100",
             "nvidia.com/gpu.present": "true",
             "feature.node.kubernetes.io/pci-10de.present": "true",
+            # AKS GPU pools run Ubuntu 22.04.
+            "feature.node.kubernetes.io/system-os_release.ID": "ubuntu",
+            "feature.node.kubernetes.io/system-os_release.VERSION_ID": "22.04",
         },
         taint_value="true",
         expected_daemonsets={
@@ -123,6 +131,10 @@ CLOUDS: dict[str, Cloud] = {
             "modelplane.ai/gpu": "h100",
             "nvidia.com/gpu.present": "true",
             "feature.node.kubernetes.io/pci-10de.present": "true",
+            # GKE GPU pools run Container-Optimized OS; VERSION_ID is the
+            # COS milestone.
+            "feature.node.kubernetes.io/system-os_release.ID": "cos",
+            "feature.node.kubernetes.io/system-os_release.VERSION_ID": "121",
         },
         taint_value="present",
         expected_daemonsets={
@@ -146,6 +158,9 @@ CLOUDS: dict[str, Cloud] = {
             "modelplane.ai/gpu": "nvidia-l40s",
             "nvidia.com/gpu.present": "true",
             "feature.node.kubernetes.io/pci-10de.present": "true",
+            # Civo GPU node images are Ubuntu 22.04.
+            "feature.node.kubernetes.io/system-os_release.ID": "ubuntu",
+            "feature.node.kubernetes.io/system-os_release.VERSION_ID": "22.04",
         },
         taint_value="true",
         expected_daemonsets={
@@ -167,6 +182,9 @@ CLOUDS: dict[str, Cloud] = {
             "modelplane.ai/gpu": "h100",
             "nvidia.com/gpu.present": "true",
             "feature.node.kubernetes.io/pci-10de.present": "true",
+            # Nebius GPU node groups run Ubuntu 22.04.
+            "feature.node.kubernetes.io/system-os_release.ID": "ubuntu",
+            "feature.node.kubernetes.io/system-os_release.VERSION_ID": "22.04",
         },
         taint_value="true",
         expected_daemonsets={
@@ -192,6 +210,10 @@ CLOUDS: dict[str, Cloud] = {
             "modelplane.ai/gpu": "a16",
             "nvidia.com/gpu.present": "true",
             "feature.node.kubernetes.io/pci-10de.present": "true",
+            # VKE GPU nodes run Ubuntu 22.04; the platform's NFD would set
+            # these like the GPU labels above.
+            "feature.node.kubernetes.io/system-os_release.ID": "ubuntu",
+            "feature.node.kubernetes.io/system-os_release.VERSION_ID": "22.04",
         },
         taint_value="true",
         expected_daemonsets={
@@ -212,6 +234,9 @@ CLOUDS: dict[str, Cloud] = {
             "modelplane.ai/pool": "gpu-fake",
             "nvidia.com/gpu.present": "true",
             "feature.node.kubernetes.io/pci-10de.present": "true",
+            # No convention for BYO node OS; Ubuntu 22.04 is a common one.
+            "feature.node.kubernetes.io/system-os_release.ID": "ubuntu",
+            "feature.node.kubernetes.io/system-os_release.VERSION_ID": "22.04",
         },
         taint_value="true",
         expected_daemonsets={

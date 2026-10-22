@@ -88,10 +88,6 @@ class Composer:
     def compose(self) -> None:
         if not self.resolve_inputs():
             return
-        # Conditions are derived from observed state even when composing stops
-        # with a fatal result. Crossplane keeps the conditions a function sets
-        # and marks the rest Unknown, so skipping them would report a pair that
-        # still serves as ModelReady=Unknown.
         self.compose_model_serving()
         self.derive_conditions()
 

@@ -181,12 +181,19 @@ def _config(
                                     "action": "keep",
                                     "regex": ".+",
                                 },
-                                # By name: matching by number would find the
-                                # pd-sidecar on a disaggregated pod.
+                                # By name, on the engine or picker container:
+                                # matching by number would find a sidecar on
+                                # 8000, and another container may name a port
+                                # http.
                                 {
                                     "source_labels": ["__meta_kubernetes_pod_container_port_name"],
                                     "action": "keep",
                                     "regex": "http",
+                                },
+                                {
+                                    "source_labels": ["__meta_kubernetes_pod_container_name"],
+                                    "action": "keep",
+                                    "regex": "engine|epp",
                                 },
                                 {
                                     "source_labels": ["__meta_kubernetes_pod_label_modelplane_ai_deployment"],
@@ -1186,7 +1193,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="dd2c199a82264ab7",
+                    config_hash="4811f4b31c39a4f1",
                     volumes=[{"name": "config", "configMap": {"name": "modelplane-collector"}}],
                     volume_mounts=[{"name": "config", "mountPath": "/conf"}],
                     env_from=None,
@@ -1231,7 +1238,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="73bd9d78c3f4bfbb",
+                    config_hash="978ab36bf03ec977",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-primary", "secret": {"secretName": "telemetry-credentials"}},
@@ -1298,7 +1305,7 @@ OBJECTS_CASES = [
             (
                 "collector",
                 _deployment(
-                    config_hash="3d55f1c0bb84aac6",
+                    config_hash="de542e1c484b7ed1",
                     volumes=[
                         {"name": "config", "configMap": {"name": "modelplane-collector"}},
                         {"name": "credentials-vendor", "secret": {"secretName": "vendor-token"}},

@@ -78,14 +78,15 @@ class LLMDBackend:
             c = {
                 "name": "engine",
                 "image": engine_container.image,
-                # vLLM tensor parallelism needs a large /dev/shm.
+                # vLLM tensor parallelism and NIXL KV transfer need a large /dev/shm.
                 "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}, *cache_volume_mounts],
             }
             # GPUs per pod bound via DRA through the member's claim. A claimless
             # member (a coordinator-only leader) has no pod-level claim for its
             # container to reference.
-            if member.deviceRequests:
-                c["resources"] = base.engine_resources()
+            resources = base.engine_resources(engine_container, claim=bool(member.deviceRequests))
+            if resources:
+                c["resources"] = resources
             if engine_container.command:
                 c["command"] = list(engine_container.command)
             if args:
@@ -100,20 +101,15 @@ class LLMDBackend:
                 env.extend(e.model_dump(exclude_none=True) for e in engine_container.env)
             c["env"] = env
             if serving:
-                c["ports"] = [{"name": base.ENGINE_PORT_NAME, "containerPort": base.ENGINE_PORT}]
-                c["readinessProbe"] = {
-                    "httpGet": {"path": "/health", "port": base.ENGINE_PORT},
-                    "initialDelaySeconds": 30,
-                    "periodSeconds": 10,
-                    # A slow /health (e.g. SGLang's ~1s) flaps the probe under the
-                    # 1s Kubernetes default; 5s gives it room.
-                    "timeoutSeconds": 5,
-                }
+                c["ports"] = base.engine_ports(engine_container)
+                c["readinessProbe"] = base.readiness_probe(base.engine_http_port(engine_container))
+            elif engine_container.ports:
+                c["ports"] = base.declared_ports(engine_container)
             return c
 
         def pod_spec(member: v1alpha1.Member, c: dict) -> dict:
             spec = {
-                "containers": [c],
+                "containers": [c, *base.sidecar_containers(member)],
                 "volumes": [{"name": "dshm", "emptyDir": {"medium": "Memory"}}, *cache_volumes],
             }
             # Every pod pins to its member's scheduled pool and, if the member

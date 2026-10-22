@@ -57,11 +57,104 @@ def _model_replica() -> fnv1.Resource:
                 "modelplane.ai/cluster": "cluster-a",
             },
         ),
-        spec=v1alpha1.SpecModel(
+        spec=v1alpha1.SpecModel1(
             clusterName="cluster-a",
             engines=[
                 v1alpha1.Engine(
                     name="main",
+                    copies=1,
+                    members=[
+                        v1alpha1.Member(
+                            role="Standalone",
+                            nodePoolName="frontier",
+                            deviceRequests=[
+                                v1alpha1.DeviceRequest(
+                                    name="gpu",
+                                    deviceClassName="gpu.nvidia.com",
+                                    count=1,
+                                    selectors=[
+                                        v1alpha1.Selector(
+                                            cel='device.capacity["gpu.nvidia.com"].memory.compareTo(quantity("80Gi")) >= 0'
+                                        )
+                                    ],
+                                ),
+                            ],
+                            template=v1alpha1.Template(
+                                spec=v1alpha1.Spec(
+                                    containers=[
+                                        v1alpha1.Container(
+                                            name="engine",
+                                            image="vllm/vllm-openai:latest",
+                                            args=["--model=Qwen/Qwen3-0.6B"],
+                                        ),
+                                    ],
+                                ),
+                            ),
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    )
+    return fnv1.Resource(resource=resource.dict_to_struct(xr.model_dump(exclude_none=True, mode="json", by_alias=True)))
+
+
+def _prefill_decode_replica(*, serving: v1alpha1.Serving) -> fnv1.Resource:
+    """The ModelReplica XR test-replica in ml-team, serving PrefillDecode from a prefill and a decode engine.
+
+    Each engine's pod runs only its engine container, so the decode pod has no
+    sidecar.
+    """
+    xr = v1alpha1.ModelReplica(
+        metadata=metav1.ObjectMeta(
+            name="test-replica",
+            namespace="ml-team",
+            labels={
+                "modelplane.ai/deployment": "my-deployment",
+                "modelplane.ai/cluster": "cluster-a",
+            },
+        ),
+        spec=v1alpha1.SpecModel1(
+            clusterName="cluster-a",
+            serving=serving,
+            engines=[
+                v1alpha1.Engine(
+                    name="prefill",
+                    phase="Prefill",
+                    copies=1,
+                    members=[
+                        v1alpha1.Member(
+                            role="Standalone",
+                            nodePoolName="frontier",
+                            deviceRequests=[
+                                v1alpha1.DeviceRequest(
+                                    name="gpu",
+                                    deviceClassName="gpu.nvidia.com",
+                                    count=1,
+                                    selectors=[
+                                        v1alpha1.Selector(
+                                            cel='device.capacity["gpu.nvidia.com"].memory.compareTo(quantity("80Gi")) >= 0'
+                                        )
+                                    ],
+                                ),
+                            ],
+                            template=v1alpha1.Template(
+                                spec=v1alpha1.Spec(
+                                    containers=[
+                                        v1alpha1.Container(
+                                            name="engine",
+                                            image="vllm/vllm-openai:latest",
+                                            args=["--model=Qwen/Qwen3-0.6B"],
+                                        ),
+                                    ],
+                                ),
+                            ),
+                        ),
+                    ],
+                ),
+                v1alpha1.Engine(
+                    name="decode",
+                    phase="Decode",
                     copies=1,
                     members=[
                         v1alpha1.Member(
@@ -117,8 +210,8 @@ def _cluster(*, provider_config_ref: str | None) -> fnv1.Resource:
     return fnv1.Resource(resource=resource.dict_to_struct(cluster))
 
 
-def _deployment(*, ready: fnv1.Ready) -> fnv1.Resource:
-    """The Object composing the engine's Deployment.
+def _deployment(*, ready: fnv1.Ready, name: str, claim_template_name: str, labels: dict) -> fnv1.Resource:
+    """The Object composing an engine's Deployment.
 
     Its pod carries the labels the collector attributes the engine's metrics by:
     the deployment, the engine and the member's role.
@@ -138,23 +231,12 @@ def _deployment(*, ready: fnv1.Ready) -> fnv1.Resource:
                         "manifest": {
                             "apiVersion": "apps/v1",
                             "kind": "Deployment",
-                            "metadata": {
-                                "name": "test-replica-main-6b608",
-                                "namespace": "mp-ml-team-51733",
-                            },
+                            "metadata": {"name": name, "namespace": "mp-ml-team-51733"},
                             "spec": {
                                 "replicas": 1,
-                                "selector": {"matchLabels": {"modelplane.ai/workload": "test-replica-main-6b608"}},
+                                "selector": {"matchLabels": {"modelplane.ai/workload": name}},
                                 "template": {
-                                    "metadata": {
-                                        "labels": {
-                                            "modelplane.ai/deployment": "my-deployment",
-                                            "modelplane.ai/engine": "main",
-                                            "modelplane.ai/role": "Standalone",
-                                            "modelplane.ai/serving": "test-replica",
-                                            "modelplane.ai/workload": "test-replica-main-6b608",
-                                        }
-                                    },
+                                    "metadata": {"labels": labels},
                                     "spec": {
                                         "containers": [
                                             {
@@ -177,7 +259,7 @@ def _deployment(*, ready: fnv1.Ready) -> fnv1.Resource:
                                         "resourceClaims": [
                                             {
                                                 "name": "devices",
-                                                "resourceClaimTemplateName": "test-replica-main-standalone-devices-e609d",
+                                                "resourceClaimTemplateName": claim_template_name,
                                             }
                                         ],
                                         "tolerations": [
@@ -257,8 +339,8 @@ def _route(*, ready: fnv1.Ready) -> fnv1.Resource:
     )
 
 
-def _claim_template(*, ready: fnv1.Ready) -> fnv1.Resource:
-    """The Object composing the engine's ResourceClaimTemplate."""
+def _claim_template(*, ready: fnv1.Ready, name: str) -> fnv1.Resource:
+    """The Object composing an engine's ResourceClaimTemplate."""
     return fnv1.Resource(
         resource=resource.dict_to_struct(
             {
@@ -271,10 +353,7 @@ def _claim_template(*, ready: fnv1.Ready) -> fnv1.Resource:
                         "manifest": {
                             "apiVersion": "resource.k8s.io/v1",
                             "kind": "ResourceClaimTemplate",
-                            "metadata": {
-                                "name": "test-replica-main-standalone-devices-e609d",
-                                "namespace": "mp-ml-team-51733",
-                            },
+                            "metadata": {"name": name, "namespace": "mp-ml-team-51733"},
                             "spec": {
                                 "spec": {
                                     "devices": {
@@ -324,11 +403,7 @@ def _inference_pool(*, ready: fnv1.Ready) -> fnv1.Resource:
                             "spec": {
                                 "selector": {"matchLabels": {"modelplane.ai/serving": "test-replica"}},
                                 "targetPorts": [{"number": 8000}],
-                                "endpointPickerRef": {
-                                    "name": "test-replica-epp",
-                                    "port": {"number": 9002},
-                                    "failureMode": "FailOpen",
-                                },
+                                "endpointPickerRef": {"name": "test-replica-epp", "port": {"number": 9002}},
                             },
                         }
                     },
@@ -339,11 +414,12 @@ def _inference_pool(*, ready: fnv1.Ready) -> fnv1.Resource:
     )
 
 
-def _epp(*, ready: fnv1.Ready) -> fnv1.Resource:
-    """The Object composing the endpoint picker's Deployment.
+def _epp(*, ready: fnv1.Ready, config_checksum: str) -> fnv1.Resource:
+    """The Object composing the endpoint picker's Deployment, running llm-d's picker with a config.
 
     Its pod carries the labels the collector attributes the picker's metrics by:
-    the deployment and the picker role.
+    the deployment and the picker role. The picker's command line takes the pool
+    and the config's path from the environment Modelplane sets.
     """
     return fnv1.Resource(
         resource=resource.dict_to_struct(
@@ -352,9 +428,13 @@ def _epp(*, ready: fnv1.Ready) -> fnv1.Resource:
                 "kind": "Object",
                 "spec": {
                     "providerConfigRef": {"kind": "ClusterProviderConfig", "name": "cluster-a-pc"},
+                    "watch": True,
                     "readiness": {
                         "policy": "DeriveFromCelQuery",
-                        "celQuery": 'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")',
+                        "celQuery": (
+                            'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")'
+                            ' && !object.status.conditions.exists(c, c.type == "Progressing" && c.status == "False")'
+                        ),
                     },
                     "forProvider": {
                         "manifest": {
@@ -371,9 +451,7 @@ def _epp(*, ready: fnv1.Ready) -> fnv1.Resource:
                                             "modelplane.ai/role": "picker",
                                             "modelplane.ai/deployment": "my-deployment",
                                         },
-                                        "annotations": {
-                                            "modelplane.ai/epp-config-checksum": "20c1dfea3fc4ad41e335cc74edbeb1e8689a607bc4bf7395849ffd2cf0bb2ae1"
-                                        },
+                                        "annotations": {"modelplane.ai/epp-config-checksum": config_checksum},
                                     },
                                     "spec": {
                                         "serviceAccountName": "test-replica-epp",
@@ -382,19 +460,32 @@ def _epp(*, ready: fnv1.Ready) -> fnv1.Resource:
                                                 "name": "epp",
                                                 "image": "ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
                                                 "args": [
-                                                    "--pool-name=test-replica-pool",
-                                                    "--pool-namespace=mp-ml-team-51733",
+                                                    "--pool-name=$(MODELPLANE_POOL_NAME)",
+                                                    "--pool-namespace=$(MODELPLANE_POOL_NAMESPACE)",
                                                     "--pool-group=inference.networking.k8s.io",
-                                                    "--config-file=/config/epp-config.yaml",
-                                                    "--grpc-port=9002",
-                                                    "--metrics-port=9090",
+                                                    "--config-file=$(MODELPLANE_PICKER_CONFIG)",
+                                                    "--grpc-port=$(MODELPLANE_GRPC_PORT)",
+                                                    "--grpc-health-port=$(MODELPLANE_GRPC_HEALTH_PORT)",
+                                                    "--metrics-port=$(MODELPLANE_METRICS_PORT)",
                                                     "--metrics-endpoint-auth=false",
+                                                ],
+                                                "env": [
+                                                    {"name": "MODELPLANE_POOL_NAME", "value": "test-replica-pool"},
+                                                    {"name": "MODELPLANE_POOL_NAMESPACE", "value": "mp-ml-team-51733"},
+                                                    {"name": "MODELPLANE_GRPC_PORT", "value": "9002"},
+                                                    {"name": "MODELPLANE_GRPC_HEALTH_PORT", "value": "9003"},
+                                                    {"name": "MODELPLANE_METRICS_PORT", "value": "9090"},
+                                                    {
+                                                        "name": "MODELPLANE_PICKER_CONFIG",
+                                                        "value": "/config/epp-config.yaml",
+                                                    },
                                                 ],
                                                 "ports": [
                                                     {"name": "grpc", "containerPort": 9002},
                                                     {"name": "grpc-health", "containerPort": 9003},
                                                     {"name": "http", "containerPort": 9090},
                                                 ],
+                                                "readinessProbe": {"grpc": {"port": 9003}, "periodSeconds": 2},
                                                 "volumeMounts": [{"name": "config", "mountPath": "/config"}],
                                             }
                                         ],
@@ -417,7 +508,7 @@ def _epp(*, ready: fnv1.Ready) -> fnv1.Resource:
 
 
 def _epp_config(*, ready: fnv1.Ready) -> fnv1.Resource:
-    """The Object composing the endpoint picker's ConfigMap."""
+    """The Object composing the default endpoint picker's ConfigMap, for an engine with the default block size."""
     return fnv1.Resource(
         resource=resource.dict_to_struct(
             {
@@ -439,7 +530,7 @@ def _epp_config(*, ready: fnv1.Ready) -> fnv1.Resource:
                                     "- type: approx-prefix-cache-producer\n"
                                     "  parameters:\n"
                                     "    autoTune: false\n"
-                                    "    blockSizeTokens: 16\n"
+                                    "    blockSizeTokens: 64\n"
                                     "    maxPrefixBlocksToMatch: 256\n"
                                     "    lruCapacityPerServer: 31250\n"
                                     "- type: prefix-cache-scorer\n"
@@ -656,6 +747,229 @@ def _to_dict(msg: message.Message) -> dict:
 
 
 COMPOSE_CASES = [
+    # A fatal result leaves the replica's existing resources as they are, so
+    # nothing is composed and no condition changes.
+    Case(
+        name="PrefillDecodeRoutingMissing",
+        reason="A PrefillDecode replica without a router or picker config stops with a fatal result and composes nothing.",
+        req=fnv1.RunFunctionRequest(
+            observed=fnv1.State(composite=_prefill_decode_replica(serving=v1alpha1.Serving(mode="PrefillDecode"))),
+            required_resources={"cluster": fnv1.Resources(items=[_cluster(provider_config_ref="cluster-a-pc")])},
+        ),
+        want=fnv1.RunFunctionResponse(
+            meta=fnv1.ResponseMeta(ttl=durationpb.Duration(seconds=60)),
+            desired=fnv1.State(),
+            results=[
+                fnv1.Result(
+                    severity=fnv1.SEVERITY_FATAL,
+                    message="PrefillDecode serving requires serving.router: EndpointPicker and serving.endpointPicker",
+                ),
+            ],
+            context=structpb.Struct(),
+            requirements=fnv1.Requirements(
+                resources={
+                    "cluster": fnv1.ResourceSelector(
+                        api_version="modelplane.ai/v1alpha1",
+                        kind="InferenceCluster",
+                        match_name="cluster-a",
+                    ),
+                },
+            ),
+        ),
+    ),
+    Case(
+        name="PrefillDecodePickerMissing",
+        reason=(
+            "A PrefillDecode replica with router EndpointPicker but no endpointPicker stops with a fatal result and "
+            "composes nothing."
+        ),
+        req=fnv1.RunFunctionRequest(
+            observed=fnv1.State(
+                composite=_prefill_decode_replica(
+                    serving=v1alpha1.Serving(mode="PrefillDecode", router="EndpointPicker")
+                )
+            ),
+            required_resources={"cluster": fnv1.Resources(items=[_cluster(provider_config_ref="cluster-a-pc")])},
+        ),
+        want=fnv1.RunFunctionResponse(
+            meta=fnv1.ResponseMeta(ttl=durationpb.Duration(seconds=60)),
+            desired=fnv1.State(),
+            results=[
+                fnv1.Result(
+                    severity=fnv1.SEVERITY_FATAL,
+                    message="PrefillDecode serving requires serving.router: EndpointPicker and serving.endpointPicker",
+                ),
+            ],
+            context=structpb.Struct(),
+            requirements=fnv1.Requirements(
+                resources={
+                    "cluster": fnv1.ResourceSelector(
+                        api_version="modelplane.ai/v1alpha1",
+                        kind="InferenceCluster",
+                        match_name="cluster-a",
+                    ),
+                },
+            ),
+        ),
+    ),
+    # Modelplane can't tell which container is the disaggregation sidecar, so
+    # it composes the pair as written and warns. The warning comes before the
+    # first reconcile's Composing event.
+    Case(
+        name="DecodeWithoutSidecar",
+        reason=(
+            "A PrefillDecode replica whose decode pod runs only its engine composes its engines, pool and picker, "
+            "and warns that every request skips prefill."
+        ),
+        req=fnv1.RunFunctionRequest(
+            observed=fnv1.State(
+                composite=_prefill_decode_replica(
+                    serving=v1alpha1.Serving(
+                        mode="PrefillDecode",
+                        router="EndpointPicker",
+                        endpointPicker=v1alpha1.EndpointPicker(
+                            template=v1alpha1.TemplateModel(
+                                spec=v1alpha1.SpecModel(
+                                    containers=[
+                                        v1alpha1.ContainerModel(
+                                            name="epp",
+                                            image="ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0",
+                                            args=[
+                                                "--pool-name=$(MODELPLANE_POOL_NAME)",
+                                                "--pool-namespace=$(MODELPLANE_POOL_NAMESPACE)",
+                                                "--pool-group=inference.networking.k8s.io",
+                                                "--config-file=$(MODELPLANE_PICKER_CONFIG)",
+                                                "--grpc-port=$(MODELPLANE_GRPC_PORT)",
+                                                "--grpc-health-port=$(MODELPLANE_GRPC_HEALTH_PORT)",
+                                                "--metrics-port=$(MODELPLANE_METRICS_PORT)",
+                                                "--metrics-endpoint-auth=false",
+                                            ],
+                                        )
+                                    ]
+                                )
+                            ),
+                            config={"apiVersion": "llm-d.ai/v1alpha1", "kind": "EndpointPickerConfig"},
+                        ),
+                    )
+                )
+            ),
+            required_resources={"cluster": fnv1.Resources(items=[_cluster(provider_config_ref="cluster-a-pc")])},
+        ),
+        want=fnv1.RunFunctionResponse(
+            meta=fnv1.ResponseMeta(ttl=durationpb.Duration(seconds=60)),
+            desired=fnv1.State(
+                resources={
+                    "model-serving-prefill": _deployment(
+                        ready=fnv1.READY_UNSPECIFIED,
+                        name="test-replica-prefill-10d7e",
+                        claim_template_name="test-replica-prefill-standalone-devices-51762",
+                        labels={
+                            "modelplane.ai/deployment": "my-deployment",
+                            "modelplane.ai/engine": "prefill",
+                            "modelplane.ai/phase": "Prefill",
+                            "modelplane.ai/role": "Standalone",
+                            "modelplane.ai/serving": "test-replica",
+                            "modelplane.ai/workload": "test-replica-prefill-10d7e",
+                            "llm-d.ai/role": "prefill",
+                        },
+                    ),
+                    "resource-claim-prefill-standalone": _claim_template(
+                        ready=fnv1.READY_UNSPECIFIED, name="test-replica-prefill-standalone-devices-51762"
+                    ),
+                    "model-serving-decode": _deployment(
+                        ready=fnv1.READY_UNSPECIFIED,
+                        name="test-replica-decode-44185",
+                        claim_template_name="test-replica-decode-standalone-devices-e863a",
+                        labels={
+                            "modelplane.ai/deployment": "my-deployment",
+                            "modelplane.ai/engine": "decode",
+                            "modelplane.ai/phase": "Decode",
+                            "modelplane.ai/role": "Standalone",
+                            "modelplane.ai/serving": "test-replica",
+                            "modelplane.ai/workload": "test-replica-decode-44185",
+                            "llm-d.ai/role": "decode",
+                        },
+                    ),
+                    "resource-claim-decode-standalone": _claim_template(
+                        ready=fnv1.READY_UNSPECIFIED, name="test-replica-decode-standalone-devices-e863a"
+                    ),
+                    "model-route": _route(ready=fnv1.READY_UNSPECIFIED),
+                    "inference-pool": _inference_pool(ready=fnv1.READY_UNSPECIFIED),
+                    "epp": _epp(
+                        ready=fnv1.READY_UNSPECIFIED,
+                        config_checksum="cea77cf711f4c10cb373847380535aa103899d74fa07e9a914cacc6ed05cd479",
+                    ),
+                    # The user's config, rendered as JSON with its keys sorted.
+                    "epp-config": fnv1.Resource(
+                        resource=resource.dict_to_struct(
+                            {
+                                "apiVersion": "kubernetes.m.crossplane.io/v1alpha1",
+                                "kind": "Object",
+                                "spec": {
+                                    "providerConfigRef": {"kind": "ClusterProviderConfig", "name": "cluster-a-pc"},
+                                    "readiness": {"policy": "SuccessfulCreate"},
+                                    "forProvider": {
+                                        "manifest": {
+                                            "apiVersion": "v1",
+                                            "kind": "ConfigMap",
+                                            "metadata": {"name": "test-replica-epp", "namespace": "mp-ml-team-51733"},
+                                            "data": {
+                                                "epp-config.yaml": (
+                                                    "{\n"
+                                                    '  "apiVersion": "llm-d.ai/v1alpha1",\n'
+                                                    '  "kind": "EndpointPickerConfig"\n'
+                                                    "}"
+                                                )
+                                            },
+                                        }
+                                    },
+                                },
+                            }
+                        ),
+                    ),
+                    "epp-role": _epp_role(ready=fnv1.READY_UNSPECIFIED),
+                    "epp-rolebinding": _epp_role_binding(ready=fnv1.READY_UNSPECIFIED),
+                    "epp-serviceaccount": _epp_service_account(ready=fnv1.READY_UNSPECIFIED),
+                    "epp-service": _epp_service(ready=fnv1.READY_UNSPECIFIED),
+                },
+            ),
+            results=[
+                fnv1.Result(
+                    severity=fnv1.SEVERITY_WARNING,
+                    message=(
+                        "The Decode engine's serving pod has no container beside the engine. llm-d's picker sends "
+                        "prefill through a sidecar in the decode pod, so without one every request skips prefill."
+                    ),
+                ),
+                fnv1.Result(
+                    severity=fnv1.SEVERITY_NORMAL,
+                    message="Composing vllm/vllm-openai:latest on cluster-a",
+                ),
+            ],
+            context=structpb.Struct(),
+            requirements=fnv1.Requirements(
+                resources={
+                    "cluster": fnv1.ResourceSelector(
+                        api_version="modelplane.ai/v1alpha1",
+                        kind="InferenceCluster",
+                        match_name="cluster-a",
+                    ),
+                },
+            ),
+            conditions=[
+                fnv1.Condition(
+                    type="ModelAccepted",
+                    status=fnv1.STATUS_CONDITION_FALSE,
+                    reason="Deploying",
+                ),
+                fnv1.Condition(
+                    type="ModelReady",
+                    status=fnv1.STATUS_CONDITION_FALSE,
+                    reason="WaitingForModel",
+                ),
+            ],
+        ),
+    ),
     # The function only asserts readiness for a resource it can see in observed
     # state.
     Case(
@@ -672,11 +986,27 @@ COMPOSE_CASES = [
             meta=fnv1.ResponseMeta(ttl=durationpb.Duration(seconds=60)),
             desired=fnv1.State(
                 resources={
-                    "model-serving-main": _deployment(ready=fnv1.READY_UNSPECIFIED),
+                    "model-serving-main": _deployment(
+                        ready=fnv1.READY_UNSPECIFIED,
+                        name="test-replica-main-6b608",
+                        claim_template_name="test-replica-main-standalone-devices-e609d",
+                        labels={
+                            "modelplane.ai/deployment": "my-deployment",
+                            "modelplane.ai/engine": "main",
+                            "modelplane.ai/role": "Standalone",
+                            "modelplane.ai/serving": "test-replica",
+                            "modelplane.ai/workload": "test-replica-main-6b608",
+                        },
+                    ),
                     "model-route": _route(ready=fnv1.READY_UNSPECIFIED),
-                    "resource-claim-main-standalone": _claim_template(ready=fnv1.READY_UNSPECIFIED),
+                    "resource-claim-main-standalone": _claim_template(
+                        ready=fnv1.READY_UNSPECIFIED, name="test-replica-main-standalone-devices-e609d"
+                    ),
                     "inference-pool": _inference_pool(ready=fnv1.READY_UNSPECIFIED),
-                    "epp": _epp(ready=fnv1.READY_UNSPECIFIED),
+                    "epp": _epp(
+                        ready=fnv1.READY_UNSPECIFIED,
+                        config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                    ),
                     "epp-config": _epp_config(ready=fnv1.READY_UNSPECIFIED),
                     "epp-role": _epp_role(ready=fnv1.READY_UNSPECIFIED),
                     "epp-rolebinding": _epp_role_binding(ready=fnv1.READY_UNSPECIFIED),
@@ -823,11 +1153,27 @@ COMPOSE_CASES = [
             meta=fnv1.ResponseMeta(ttl=durationpb.Duration(seconds=60)),
             desired=fnv1.State(
                 resources={
-                    "model-serving-main": _deployment(ready=fnv1.READY_TRUE),
+                    "model-serving-main": _deployment(
+                        ready=fnv1.READY_TRUE,
+                        name="test-replica-main-6b608",
+                        claim_template_name="test-replica-main-standalone-devices-e609d",
+                        labels={
+                            "modelplane.ai/deployment": "my-deployment",
+                            "modelplane.ai/engine": "main",
+                            "modelplane.ai/role": "Standalone",
+                            "modelplane.ai/serving": "test-replica",
+                            "modelplane.ai/workload": "test-replica-main-6b608",
+                        },
+                    ),
                     "model-route": _route(ready=fnv1.READY_TRUE),
-                    "resource-claim-main-standalone": _claim_template(ready=fnv1.READY_TRUE),
+                    "resource-claim-main-standalone": _claim_template(
+                        ready=fnv1.READY_TRUE, name="test-replica-main-standalone-devices-e609d"
+                    ),
                     "inference-pool": _inference_pool(ready=fnv1.READY_UNSPECIFIED),
-                    "epp": _epp(ready=fnv1.READY_UNSPECIFIED),
+                    "epp": _epp(
+                        ready=fnv1.READY_UNSPECIFIED,
+                        config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                    ),
                     "epp-config": _epp_config(ready=fnv1.READY_UNSPECIFIED),
                     "epp-role": _epp_role(ready=fnv1.READY_UNSPECIFIED),
                     "epp-rolebinding": _epp_role_binding(ready=fnv1.READY_UNSPECIFIED),
@@ -881,11 +1227,27 @@ COMPOSE_CASES = [
             meta=fnv1.ResponseMeta(ttl=durationpb.Duration(seconds=60)),
             desired=fnv1.State(
                 resources={
-                    "model-serving-main": _deployment(ready=fnv1.READY_TRUE),
+                    "model-serving-main": _deployment(
+                        ready=fnv1.READY_TRUE,
+                        name="test-replica-main-6b608",
+                        claim_template_name="test-replica-main-standalone-devices-e609d",
+                        labels={
+                            "modelplane.ai/deployment": "my-deployment",
+                            "modelplane.ai/engine": "main",
+                            "modelplane.ai/role": "Standalone",
+                            "modelplane.ai/serving": "test-replica",
+                            "modelplane.ai/workload": "test-replica-main-6b608",
+                        },
+                    ),
                     "model-route": _route(ready=fnv1.READY_TRUE),
-                    "resource-claim-main-standalone": _claim_template(ready=fnv1.READY_TRUE),
+                    "resource-claim-main-standalone": _claim_template(
+                        ready=fnv1.READY_TRUE, name="test-replica-main-standalone-devices-e609d"
+                    ),
                     "inference-pool": _inference_pool(ready=fnv1.READY_TRUE),
-                    "epp": _epp(ready=fnv1.READY_TRUE),
+                    "epp": _epp(
+                        ready=fnv1.READY_TRUE,
+                        config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                    ),
                     "epp-config": _epp_config(ready=fnv1.READY_TRUE),
                     "epp-role": _epp_role(ready=fnv1.READY_TRUE),
                     "epp-rolebinding": _epp_role_binding(ready=fnv1.READY_TRUE),
@@ -940,11 +1302,27 @@ COMPOSE_CASES = [
             meta=fnv1.ResponseMeta(ttl=durationpb.Duration(seconds=60)),
             desired=fnv1.State(
                 resources={
-                    "model-serving-main": _deployment(ready=fnv1.READY_TRUE),
+                    "model-serving-main": _deployment(
+                        ready=fnv1.READY_TRUE,
+                        name="test-replica-main-6b608",
+                        claim_template_name="test-replica-main-standalone-devices-e609d",
+                        labels={
+                            "modelplane.ai/deployment": "my-deployment",
+                            "modelplane.ai/engine": "main",
+                            "modelplane.ai/role": "Standalone",
+                            "modelplane.ai/serving": "test-replica",
+                            "modelplane.ai/workload": "test-replica-main-6b608",
+                        },
+                    ),
                     "model-route": _route(ready=fnv1.READY_TRUE),
-                    "resource-claim-main-standalone": _claim_template(ready=fnv1.READY_TRUE),
+                    "resource-claim-main-standalone": _claim_template(
+                        ready=fnv1.READY_TRUE, name="test-replica-main-standalone-devices-e609d"
+                    ),
                     "inference-pool": _inference_pool(ready=fnv1.READY_TRUE),
-                    "epp": _epp(ready=fnv1.READY_UNSPECIFIED),
+                    "epp": _epp(
+                        ready=fnv1.READY_UNSPECIFIED,
+                        config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                    ),
                     "epp-config": _epp_config(ready=fnv1.READY_TRUE),
                     "epp-role": _epp_role(ready=fnv1.READY_TRUE),
                     "epp-rolebinding": _epp_role_binding(ready=fnv1.READY_TRUE),

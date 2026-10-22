@@ -10,14 +10,14 @@
 A `ModelDeployment` lets the user configure the engines but not the router.
 Modelplane configures the router for one case: vLLM with its `NixlConnector`.
 An SGLang prefill/decode deployment gets a router it can't use, and reports
-Ready while it rejects requests (#502). Each new KV transfer format needs a
+Ready while it rejects requests ([#502](https://github.com/modelplaneai/modelplane/issues/502)). Each new KV transfer format needs a
 Modelplane release.
 
 I propose the user writes the router for prefill/decode serving:
 
 - `serving.router: EndpointPicker` hands the routing to the user. They write
   the endpoint picker's container and configuration in `serving.endpointPicker`,
-  and the sidecar into the decode pod as a container beside `engine` (#108).
+  and the sidecar into the decode pod as a container beside `engine` ([#108](https://github.com/modelplaneai/modelplane/issues/108)).
 - A `PrefillDecode` deployment must set both. Only `Unified` serving keeps a
   default, where the cluster routes the deployment.
 
@@ -84,7 +84,7 @@ Modelplane configures the router for vLLM with NIXL:
 - It reads `--block-size` or `--page-size` from the engine's args, to configure
   prefix-cache scoring.
 
-The user can't change the picker's configuration or image (#179).
+The user can't change the picker's configuration or image ([#179](https://github.com/modelplaneai/modelplane/issues/179)).
 
 This works only for vLLM with NIXL. SGLang needs a different decider, connector,
 and pod label, and each new connector needs a Modelplane release. Router
@@ -132,10 +132,10 @@ This design doesn't cover:
 
 - Detecting a `PrefillDecode` pair that reports Ready but doesn't
   disaggregate, from a wrong decider, connector, or engine-type label, or a
-  missing sidecar (#552). Modelplane can't check these from the API. llm-d's
+  missing sidecar ([#552](https://github.com/modelplaneai/modelplane/issues/552)). Modelplane can't check these from the API. llm-d's
   picker counts its decisions by type, such as `decode-only`, in
   `llm_d_epp_disagg_decision_total`, which a check could read.
-- Routing to data-parallel ranks inside a pod (#500).
+- Routing to data-parallel ranks inside a pod ([#500](https://github.com/modelplaneai/modelplane/issues/500)).
 
 ## Proposal
 
@@ -231,7 +231,7 @@ own picker to tune it.
 
 `router: EndpointPicker` runs only on a cluster that composes an InferencePool
 for a picker the user names. Every cluster does, on either serving stack, so
-placement doesn't need to check. Stack-aware placement (#418) adds an
+placement doesn't need to check. Stack-aware placement ([#418](https://github.com/modelplaneai/modelplane/issues/418)) adds an
 `InferenceCluster.status.routers` list of the routers a cluster can compose,
 places a deployment that sets `router` only on clusters that list it, and
 reports `ReplicasScheduled=False` when none qualify.
@@ -242,18 +242,21 @@ reports `ReplicasScheduled=False` when none qualify.
 pod template like a member's, with one container. The user writes the image
 and the command line, because each picker spells its flags differently.
 Modelplane passes what only it knows as environment, as the base design does
-for an engine:
+for an engine, including the ports it expects the picker to serve on:
 
 | Variable | Value |
 |---|---|
 | `MODELPLANE_POOL_NAME` | The InferencePool the picker serves |
 | `MODELPLANE_POOL_NAMESPACE` | The pool's namespace |
 | `MODELPLANE_PICKER_CONFIG` | Where Modelplane mounts `config`, when it's set |
+| `MODELPLANE_GRPC_PORT` | The port the gateway calls the picker on, 9002 |
+| `MODELPLANE_GRPC_HEALTH_PORT` | The port of the picker's gRPC health service, 9003 |
+| `MODELPLANE_METRICS_PORT` | The port the picker serves Prometheus metrics on, 9090 |
 
-The fixed contract is the ports. The picker serves the gateway on gRPC port
-9002, the gRPC health service on 9003, and Prometheus metrics on 9090.
-Modelplane declares them, and the picker's readiness probe calls the health
-service. This container runs llm-d's picker:
+The ports are the contract. The command line names them through the
+environment, so a later release can change one without breaking a deployment's
+picker. Modelplane declares them on the container, and the picker's readiness
+probe calls the health service. This container runs llm-d's picker:
 
 ```yaml
 containers:
@@ -264,9 +267,9 @@ containers:
   - --pool-namespace=$(MODELPLANE_POOL_NAMESPACE)
   - --pool-group=inference.networking.k8s.io
   - --config-file=$(MODELPLANE_PICKER_CONFIG)
-  - --grpc-port=9002
-  - --grpc-health-port=9003
-  - --metrics-port=9090
+  - --grpc-port=$(MODELPLANE_GRPC_PORT)
+  - --grpc-health-port=$(MODELPLANE_GRPC_HEALTH_PORT)
+  - --metrics-port=$(MODELPLANE_METRICS_PORT)
   - --metrics-endpoint-auth=false
 ```
 
@@ -290,7 +293,7 @@ pods.
 
 ### Containers beside the engine
 
-This design adopts #108, in either serving mode. A member's template can list
+This design adopts [#108](https://github.com/modelplaneai/modelplane/issues/108), in either serving mode. A member's template can list
 containers beside `engine`:
 
 - Exactly one container is named `engine`, and container names are unique.
@@ -364,9 +367,9 @@ spec:
                 - --pool-namespace=$(MODELPLANE_POOL_NAMESPACE)
                 - --pool-group=inference.networking.k8s.io
                 - --config-file=$(MODELPLANE_PICKER_CONFIG)
-                - --grpc-port=9002
-                - --grpc-health-port=9003
-                - --metrics-port=9090
+                - --grpc-port=$(MODELPLANE_GRPC_PORT)
+                - --grpc-health-port=$(MODELPLANE_GRPC_HEALTH_PORT)
+                - --metrics-port=$(MODELPLANE_METRICS_PORT)
                 - --metrics-endpoint-auth=false
           config:
             apiVersion: llm-d.ai/v1alpha1

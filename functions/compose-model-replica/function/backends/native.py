@@ -61,26 +61,18 @@ class NativeBackend:
             "name": "engine",
             "image": engine_container.image,
             "args": list(engine_container.args or []),
-            "ports": [{"name": base.ENGINE_PORT_NAME, "containerPort": base.ENGINE_PORT}],
-            # vLLM tensor parallelism needs a large /dev/shm.
+            "ports": base.engine_ports(engine_container),
+            # vLLM tensor parallelism and NIXL KV transfer need a large /dev/shm.
             "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}, *cache_volume_mounts],
-            "readinessProbe": {
-                "httpGet": {"path": "/health", "port": base.ENGINE_PORT},
-                "initialDelaySeconds": 30,
-                "periodSeconds": 10,
-                # Kubernetes defaults the probe timeout to 1s. Some engines'
-                # /health isn't instant - SGLang's sits right at ~1s - so a 1s
-                # timeout flaps the probe and the pod never goes Ready. 5s gives
-                # a slow /health room without masking a real hang.
-                "timeoutSeconds": 5,
-            },
+            "readinessProbe": base.readiness_probe(base.engine_http_port(engine_container)),
         }
         # GPUs bind via DRA: the container references the pod-level claim
         # backed by the member's ResourceClaimTemplate. A Standalone member
         # always claims (its engine has no other member to claim, and the XRD
         # requires some member to), so this is belt and braces.
-        if member.deviceRequests:
-            container["resources"] = base.engine_resources()
+        resources = base.engine_resources(engine_container, claim=bool(member.deviceRequests))
+        if resources:
+            container["resources"] = resources
         if engine_container.command:
             container["command"] = list(engine_container.command)
         # Modelplane's entries lead so the user's can reference them. A scaled
@@ -96,7 +88,7 @@ class NativeBackend:
             container["securityContext"] = security_context
 
         pod_spec = {
-            "containers": [container],
+            "containers": [container, *base.sidecar_containers(member)],
             "volumes": [{"name": "dshm", "emptyDir": {"medium": "Memory"}}, *cache_volumes],
         }
         # Pin to the member's scheduled pool and claim GPUs via DRA.

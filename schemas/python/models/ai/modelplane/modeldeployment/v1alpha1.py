@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import AwareDatetime, BaseModel, Field, conint, constr
 
@@ -118,6 +118,50 @@ class EnvItem(BaseModel):
     valueFrom: ValueFrom | None = None
 
 
+class Port(BaseModel):
+    containerPort: conint(ge=1, le=65535)
+    """
+    Port number the container listens on.
+    """
+    name: (
+        constr(pattern=r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', min_length=1, max_length=15)
+        | None
+    ) = None
+    """
+    Port name. The engine container's port named "http" is where Modelplane probes the engine and scrapes its metrics.
+    """
+
+
+class Grpc(BaseModel):
+    port: int
+    service: str | None = None
+
+
+class HttpGet(BaseModel):
+    path: str | None = None
+    port: int | str
+
+
+class TcpSocket(BaseModel):
+    port: int | str
+
+
+class ReadinessProbe(BaseModel):
+    failureThreshold: conint(ge=1) | None = None
+    grpc: Grpc | None = None
+    httpGet: HttpGet | None = None
+    initialDelaySeconds: conint(ge=0) | None = None
+    periodSeconds: conint(ge=1) | None = None
+    successThreshold: conint(ge=1) | None = None
+    tcpSocket: TcpSocket | None = None
+    timeoutSeconds: conint(ge=1) | None = None
+
+
+class Resources(BaseModel):
+    limits: dict[str, int | str] | None = Field(None, max_length=3)
+    requests: dict[str, int | str] | None = Field(None, max_length=3)
+
+
 class Container(BaseModel):
     args: list[str] | None = None
     """
@@ -136,9 +180,23 @@ class Container(BaseModel):
     """
     Container image.
     """
-    name: constr(min_length=1)
+    name: constr(
+        pattern=r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', min_length=1, max_length=63
+    )
     """
     Container name. The container named "engine" is the inference engine.
+    """
+    ports: list[Port] | None = Field(None, max_length=8)
+    """
+    Ports the container listens on. The engine container's port named "http" is where Modelplane probes the engine and scrapes its metrics. Without one, the engine serves on 8000, and an unnamed port 8000 is its "http" port. A container in front of the engine declares 8000, and the engine then declares its "http" port elsewhere. A Worker's ports pass through as written.
+    """
+    readinessProbe: ReadinessProbe | None = None
+    """
+    How Kubernetes checks that a container beside the engine is ready, such as a sidecar on port 8000. The engine container can't set one: Modelplane probes the engine on its http port.
+    """
+    resources: Resources | None = None
+    """
+    CPU and memory requests and limits. On the engine container, Modelplane adds the member's device claim beside them.
     """
 
 
@@ -147,9 +205,9 @@ class ImagePullSecret(BaseModel):
 
 
 class Spec(BaseModel):
-    containers: list[Container] = Field(..., max_length=1, min_length=1)
+    containers: list[Container] = Field(..., max_length=8, min_length=1)
     """
-    Containers for the engine pod. v0.1 supports a single container, which must be named "engine" (the inference engine). Sidecar / multi-container support is tracked separately.
+    Containers for the engine pod. Exactly one is named "engine", the inference engine. The others run beside it, such as a routing sidecar. Modelplane adds device claims, MODELPLANE_ environment, ModelCache mounts, /dev/shm and the readiness probe to the engine container only.
     """
     imagePullSecrets: list[ImagePullSecret] | None = None
     """
@@ -220,10 +278,56 @@ class ModelCacheRef(BaseModel):
     """
 
 
+class ValueFromModel(BaseModel):
+    configMapKeyRef: ConfigMapKeyRef | None = None
+    fieldRef: FieldRef | None = None
+    secretKeyRef: SecretKeyRef | None = None
+
+
+class ContainerModel(BaseModel):
+    args: list[str] | None = None
+    command: list[str] | None = None
+    env: list[EnvItem] | None = None
+    image: constr(min_length=1)
+    name: constr(min_length=1, max_length=63)
+    resources: Resources | None = None
+
+
+class SpecModel(BaseModel):
+    containers: list[ContainerModel] = Field(..., max_length=1, min_length=1)
+    """
+    The picker container, named "epp". Modelplane sets MODELPLANE_POOL_NAME, MODELPLANE_POOL_NAMESPACE and, when config is set, MODELPLANE_PICKER_CONFIG in its environment, for its args to pass on as $(MODELPLANE_POOL_NAME). The picker serves the gateway's gRPC on 9002, gRPC health on 9003 and Prometheus metrics on 9090. Modelplane declares those ports, and probes readiness on 9003.
+    """
+    imagePullSecrets: list[ImagePullSecret] | None = None
+
+
+class TemplateModel(BaseModel):
+    spec: SpecModel
+
+
+class EndpointPicker(BaseModel):
+    config: dict[str, Any] | None = Field(None, min_length=1)
+    """
+    The picker's configuration, such as an llm-d EndpointPickerConfig. Modelplane mounts it at $(MODELPLANE_PICKER_CONFIG) without reading it. Omitted for a picker that takes no configuration.
+    """
+    template: TemplateModel
+    """
+    Pod template for the picker. A curated subset of PodTemplateSpec, like a member's. The user writes the picker's command line, since each picker spells it differently.
+    """
+
+
 class Serving(BaseModel):
+    endpointPicker: EndpointPicker | None = None
+    """
+    The endpoint picker Modelplane runs in front of the serving pods. Required exactly when router is EndpointPicker. Modelplane composes the picker's InferencePool, Service and RBAC around it.
+    """
     mode: Literal['Unified', 'PrefillDecode']
     """
     Unified serves prefill and decode on one engine. PrefillDecode splits them across two engines, each marking its phase as Prefill or Decode.
+    """
+    router: Literal['EndpointPicker'] | None = None
+    """
+    The router the user writes. Required under PrefillDecode. Omitted, under Unified, Modelplane routes the deployment with its default picker configuration. EndpointPicker runs the endpoint picker set in endpointPicker, and the user writes any sidecar the picker needs as a container in the member templates.
     """
 
 
@@ -243,7 +347,7 @@ class Toleration(BaseModel):
     value: str | None = None
 
 
-class SpecModel(BaseModel):
+class SpecModel1(BaseModel):
     clusterSelector: ClusterSelector | None = None
     """
     Optional label selector to filter InferenceClusters. If omitted, all ready clusters are candidates.
@@ -258,7 +362,7 @@ class SpecModel(BaseModel):
     """
     serving: Serving | None = None
     """
-    How the deployment is served from the cluster edge to its engines. Unified (the default) fronts the engines with a Service. PrefillDecode serves prefill and decode from the two engines marking those phases, with inference-aware routing that sequences prefill then decode. Omitted means Unified.
+    How the deployment is served from the cluster edge to its engines. Modelplane fronts the serving pods with an InferencePool and an endpoint picker in both modes. Unified (the default) serves prefill and decode on each engine. PrefillDecode serves them from the two engines marking those phases, with routing that sequences prefill then decode. Omitted means Unified.
     """
     tolerations: list[Toleration] | None = None
     """
@@ -266,12 +370,12 @@ class SpecModel(BaseModel):
     """
 
 
-class TemplateModel(BaseModel):
+class TemplateModel1(BaseModel):
     metadata: Metadata | None = None
-    spec: SpecModel
+    spec: SpecModel1
 
 
-class SpecModel1(BaseModel):
+class SpecModel2(BaseModel):
     crossplane: Crossplane | None = None
     """
     Configures how Crossplane will reconcile this composite resource
@@ -280,7 +384,7 @@ class SpecModel1(BaseModel):
     """
     How many ModelReplicas to fan out to. Each replica is a complete serving instance scheduled to one InferenceCluster. 0 parks the deployment: its replicas and endpoints are removed but the object and its spec remain, and conditions report NoReplicasDesired.
     """
-    template: TemplateModel
+    template: TemplateModel1
     """
     Template for the ModelReplicas this deployment fans out to. Everything but the replica count lives here, mirroring a Kubernetes Deployment's spec.template.
     """
@@ -321,7 +425,7 @@ class ModelDeployment(BaseModel):
     """
     Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
     """
-    spec: SpecModel1
+    spec: SpecModel2
     status: Status | None = None
 
 

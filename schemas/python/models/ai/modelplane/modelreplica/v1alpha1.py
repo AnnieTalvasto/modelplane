@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import AwareDatetime, BaseModel, Field, conint, constr
 
@@ -101,12 +101,61 @@ class EnvItem(BaseModel):
     valueFrom: ValueFrom | None = None
 
 
+class Port(BaseModel):
+    containerPort: conint(ge=1, le=65535)
+    name: (
+        constr(pattern=r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', min_length=1, max_length=15)
+        | None
+    ) = None
+
+
+class Grpc(BaseModel):
+    port: int
+    service: str | None = None
+
+
+class HttpGet(BaseModel):
+    path: str | None = None
+    port: int | str
+
+
+class TcpSocket(BaseModel):
+    port: int | str
+
+
+class ReadinessProbe(BaseModel):
+    failureThreshold: conint(ge=1) | None = None
+    grpc: Grpc | None = None
+    httpGet: HttpGet | None = None
+    initialDelaySeconds: conint(ge=0) | None = None
+    periodSeconds: conint(ge=1) | None = None
+    successThreshold: conint(ge=1) | None = None
+    tcpSocket: TcpSocket | None = None
+    timeoutSeconds: conint(ge=1) | None = None
+
+
+class Resources(BaseModel):
+    limits: dict[str, int | str] | None = Field(None, max_length=3)
+    requests: dict[str, int | str] | None = Field(None, max_length=3)
+
+
 class Container(BaseModel):
     args: list[str] | None = None
     command: list[str] | None = None
     env: list[EnvItem] | None = None
     image: constr(min_length=1)
-    name: constr(min_length=1)
+    name: constr(
+        pattern=r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?$', min_length=1, max_length=63
+    )
+    ports: list[Port] | None = Field(None, max_length=8)
+    readinessProbe: ReadinessProbe | None = None
+    """
+    How Kubernetes checks that a container beside the engine is ready, such as a sidecar on port 8000. The engine container can't set one: Modelplane probes the engine on its http port.
+    """
+    resources: Resources | None = None
+    """
+    CPU and memory requests and limits. On the engine container, Modelplane adds the member's device claim beside them.
+    """
 
 
 class ImagePullSecret(BaseModel):
@@ -114,7 +163,7 @@ class ImagePullSecret(BaseModel):
 
 
 class Spec(BaseModel):
-    containers: list[Container] = Field(..., max_length=1, min_length=1)
+    containers: list[Container] = Field(..., max_length=8, min_length=1)
     imagePullSecrets: list[ImagePullSecret] | None = None
 
 
@@ -154,11 +203,42 @@ class ModelCacheRef(BaseModel):
     name: constr(min_length=1)
 
 
-class Serving(BaseModel):
-    mode: Literal['Unified', 'PrefillDecode'] | None = 'Unified'
+class ValueFromModel(BaseModel):
+    configMapKeyRef: ConfigMapKeyRef | None = None
+    fieldRef: FieldRef | None = None
+    secretKeyRef: SecretKeyRef | None = None
+
+
+class ContainerModel(BaseModel):
+    args: list[str] | None = None
+    command: list[str] | None = None
+    env: list[EnvItem] | None = None
+    image: constr(min_length=1)
+    name: constr(min_length=1, max_length=63)
+    resources: Resources | None = None
 
 
 class SpecModel(BaseModel):
+    containers: list[ContainerModel] = Field(..., max_length=1, min_length=1)
+    imagePullSecrets: list[ImagePullSecret] | None = None
+
+
+class TemplateModel(BaseModel):
+    spec: SpecModel
+
+
+class EndpointPicker(BaseModel):
+    config: dict[str, Any] | None = Field(None, min_length=1)
+    template: TemplateModel
+
+
+class Serving(BaseModel):
+    endpointPicker: EndpointPicker | None = None
+    mode: Literal['Unified', 'PrefillDecode'] | None = 'Unified'
+    router: Literal['EndpointPicker'] | None = None
+
+
+class SpecModel1(BaseModel):
     clusterName: constr(min_length=1)
     """
     Name of the InferenceCluster this replica is pinned to. Replicas are pinned at creation time. If the cluster is temporarily unavailable the replica stays pinned and the parent ModelDeployment surfaces the degraded state via its conditions. If the cluster is deleted entirely the parent ModelDeployment re-places the replica on another viable cluster.
@@ -177,7 +257,7 @@ class SpecModel(BaseModel):
     """
     serving: Serving | None = None
     """
-    Serving mode, inherited verbatim from the parent ModelDeployment. PrefillDecode fronts the engines with an InferencePool + endpoint picker and role-labels the engine each marks with its phase; Unified (or absent) fronts them with a Service.
+    Serving, inherited verbatim from the parent ModelDeployment. Both modes front the serving pods with an InferencePool and an endpoint picker, which endpointPicker can configure. PrefillDecode also role-labels the engine each marks with its phase.
     """
 
 
@@ -210,7 +290,7 @@ class ModelReplica(BaseModel):
     """
     Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
     """
-    spec: SpecModel
+    spec: SpecModel1
     status: Status | None = None
 
 

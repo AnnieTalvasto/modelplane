@@ -101,16 +101,6 @@ class KvBlockSizeCase:
 
 
 @dataclasses.dataclass
-class MaxPrefixTokensCase:
-    """A test case for routing._max_prefix_tokens."""
-
-    name: str
-    reason: str
-    engine_args: list[str]
-    want: int
-
-
-@dataclasses.dataclass
 class RemoteNamespaceCase:
     """A test case for base.remote_namespace."""
 
@@ -7252,7 +7242,7 @@ APPLY_CASES = [
     ),
     ApplyCase(
         name="UnifiedLongContext",
-        reason="An engine context length sets the default picker configuration's maxPrefixTokensToMatch.",
+        reason="An engine context length above 131072 leaves the default picker configuration's maxPrefixTokensToMatch at 131072.",
         composed={
             "model-serving-main": _deployment(
                 name="r-main-bb4e3",
@@ -7376,7 +7366,7 @@ APPLY_CASES = [
                 "  parameters:\n"
                 "    autoTune: false\n"
                 "    blockSizeTokens: 64\n"
-                "    maxPrefixTokensToMatch: 262144\n"
+                "    maxPrefixTokensToMatch: 131072\n"
                 "    lruCapacityPerServer: 31250\n"
                 "- type: prefix-cache-scorer\n"
                 "- type: queue-scorer\n"
@@ -7395,7 +7385,7 @@ APPLY_CASES = [
                 app="r-epp",
                 labels={"app": "r-epp", "modelplane.ai/role": "picker"},
                 annotations={
-                    "modelplane.ai/epp-config-checksum": "86d47f5fced98cf55a3b265842e8a80d66c94bfbdcd2baf448b3d72faee3d024"
+                    "modelplane.ai/epp-config-checksum": "c4f1cefa4a1fe67069eaa6e9dde3e5b9bc7e79d3f807ecd076dd021259b2ab39"
                 },
                 containers=[_llm_d_epp_container(pool="r-pool")],
                 volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
@@ -8750,60 +8740,6 @@ KV_BLOCK_SIZE_CASES = [
 def test_kv_block_size(case: KvBlockSizeCase) -> None:
     """The KV block size comes from the engine's flags."""
     assert routing._kv_block_size(case.engine_args) == case.want, case.reason
-
-
-# The EPP prefix-cache producer's maxPrefixTokensToMatch is derived best-effort
-# from the engine flags, so it matches as much of a prompt as the engine takes.
-MAX_PREFIX_TOKENS_CASES = [
-    MaxPrefixTokensCase(
-        name="NoArgs",
-        reason="With no engine args the match length is llm-d-router's default of 131072.",
-        engine_args=[],
-        want=131072,
-    ),
-    MaxPrefixTokensCase(
-        name="NoContextLengthFlag",
-        reason="With no context length flag the match length is llm-d-router's default of 131072.",
-        engine_args=["--model=/mnt/models", "--block-size=128"],
-        want=131072,
-    ),
-    MaxPrefixTokensCase(
-        name="MaxModelLenEquals",
-        reason="vLLM's --max-model-len=262144 sets the match length.",
-        engine_args=["--model=/m", "--max-model-len=262144"],
-        want=262144,
-    ),
-    MaxPrefixTokensCase(
-        name="VLLMMaxModelLen",
-        reason="vLLM's --max-model-len followed by 8192 sets the match length.",
-        engine_args=["--max-model-len", "8192"],
-        want=8192,
-    ),
-    MaxPrefixTokensCase(
-        name="SGLangContextLength",
-        reason="SGLang's --context-length=1048576 sets the match length.",
-        engine_args=["--context-length=1048576"],
-        want=1048576,
-    ),
-    MaxPrefixTokensCase(
-        name="NonIntegerContext",
-        reason="A context length of 128k falls back to 131072.",
-        engine_args=["--max-model-len", "128k"],
-        want=131072,
-    ),
-    MaxPrefixTokensCase(
-        name="NegativeContext",
-        reason="A context length of -1, which asks vLLM to fit it to memory, falls back to 131072.",
-        engine_args=["--max-model-len=-1"],
-        want=131072,
-    ),
-]
-
-
-@pytest.mark.parametrize("case", MAX_PREFIX_TOKENS_CASES, ids=lambda case: case.name)
-def test_max_prefix_tokens(case: MaxPrefixTokensCase) -> None:
-    """The prefix match length comes from the engine's flags."""
-    assert routing._max_prefix_tokens(case.engine_args) == case.want, case.reason
 
 
 # compose-inference-cluster creates the namespace a replica's objects land in,

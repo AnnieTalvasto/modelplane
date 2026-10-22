@@ -119,14 +119,15 @@ _LABEL_ROLE = "llm-d.ai/role"
 # scores on. The producer pins autoTune: false and blockSizeTokens, because its
 # autoTune default leaves the block size 0 and never populates that attribute,
 # and blockSizeTokens follows the engine's KV block size (#179), at least
-# _MIN_BLOCK_SIZE_TOKENS. maxPrefixTokensToMatch follows the engine's context
-# length, because the producer hashes only that many leading tokens of a prompt,
-# and two prompts that agree that far look the same to it. It is the producer's
-# only cap: it ignores maxPrefixBlocksToMatch whenever maxPrefixTokensToMatch is
-# above 0, which it is by default. prefix-cache-scorer is weighted 2 to
-# queue-scorer's 1: cache locality dominates placement until queue depths
-# diverge, when the queue score breaks the tie. It's a starting default, not a
-# tuned one.
+# _MIN_BLOCK_SIZE_TOKENS. maxPrefixTokensToMatch is the producer's only match
+# cap: llm-d-router v0.9.0 defaults it to 131072 and, while it's above 0, ignores
+# maxPrefixBlocksToMatch (approximateprefix/types.go L133-L153, plugin.go
+# L178-L181). Rendering the default explicitly keeps the config the picker
+# reports equal to the one it runs. The producer hashes only that many leading
+# tokens of a prompt, so two prompts that agree that far look the same to it.
+# prefix-cache-scorer is weighted 2 to queue-scorer's 1: cache locality
+# dominates placement until queue depths diverge, when the queue score breaks
+# the tie. It's a starting default, not a tuned one.
 _UNIFIED_EPP_CONFIG_TEMPLATE = """\
 apiVersion: llm-d.ai/v1alpha1
 kind: EndpointPickerConfig
@@ -135,7 +136,7 @@ plugins:
   parameters:
     autoTune: false
     blockSizeTokens: BLOCK_SIZE_TOKENS
-    maxPrefixTokensToMatch: MAX_PREFIX_TOKENS
+    maxPrefixTokensToMatch: 131072
     lruCapacityPerServer: 31250
 - type: prefix-cache-scorer
 - type: queue-scorer
@@ -152,10 +153,6 @@ schedulingProfiles:
 
 _DEFAULT_KV_BLOCK_SIZE = 16
 
-# The maxPrefixTokensToMatch the picker uses when the engine's args don't set a
-# context length: llm-d-router's own default.
-_DEFAULT_MAX_PREFIX_TOKENS = 131072
-
 # The smallest blockSizeTokens the picker uses. llm-d-router raises a smaller
 # value to 64 at request time and logs a warning at startup, because a small
 # block size grows the prefix index until the picker runs out of memory
@@ -164,14 +161,9 @@ _DEFAULT_MAX_PREFIX_TOKENS = 131072
 _MIN_BLOCK_SIZE_TOKENS = 64
 
 
-def _unified_epp_config_yaml(block_size: int, max_prefix_tokens: int) -> str:
-    """Render the unified EPP config with the engine's KV block size and context length.
-
-    The block size is raised to at least _MIN_BLOCK_SIZE_TOKENS.
-    """
-    return _UNIFIED_EPP_CONFIG_TEMPLATE.replace(
-        "BLOCK_SIZE_TOKENS", str(max(block_size, _MIN_BLOCK_SIZE_TOKENS))
-    ).replace("MAX_PREFIX_TOKENS", str(max_prefix_tokens))
+def _unified_epp_config_yaml(block_size: int) -> str:
+    """Render the unified EPP config with the engine's KV block size, at least _MIN_BLOCK_SIZE_TOKENS."""
+    return _UNIFIED_EPP_CONFIG_TEMPLATE.replace("BLOCK_SIZE_TOKENS", str(max(block_size, _MIN_BLOCK_SIZE_TOKENS)))
 
 
 def _flag_value(args: list, *flags: str) -> str | None:
@@ -205,24 +197,6 @@ def _kv_block_size(engine_args: list) -> int:
         except ValueError:
             pass
     return _DEFAULT_KV_BLOCK_SIZE
-
-
-def _max_prefix_tokens(engine_args: list) -> int:
-    """Best-effort read the engine's context length from its flags, so the EPP
-    prefix-cache producer hashes as much of a prompt as the engine accepts.
-
-    We peek for vLLM's --max-model-len and SGLang's --context-length, and fall
-    back to llm-d-router's own default when neither is a positive integer.
-    Without either flag the engine takes the model's context length, which
-    Modelplane can't see. A deployment that needs another value writes
-    serving.endpointPicker.config.
-    """
-    raw = _flag_value(engine_args, "--max-model-len", "--context-length")
-    try:
-        tokens = int(raw) if raw is not None else 0
-    except ValueError:
-        tokens = 0
-    return tokens if tokens > 0 else _DEFAULT_MAX_PREFIX_TOKENS
 
 
 def _engine_args(obj: k8sobjv1alpha1.Object) -> list:
@@ -383,11 +357,9 @@ def _unified(
     name = _name(replica.metadata)
     out = dict(composed)
     # The prefix-cache producer must chunk prefixes at the engine's KV block
-    # size and match up to its context length; derive both from the first
-    # engine's flags (HACK, #179).
-    engine_args = _engine_args(out[base.workload_key(replica.spec.engines[0])])
-    default_config_yaml = _unified_epp_config_yaml(_kv_block_size(engine_args), _max_prefix_tokens(engine_args))
-    container, config_yaml, secrets = _picker(replica, default_config_yaml)
+    # size; derive it from the first engine's flags (HACK, #179).
+    block_size = _kv_block_size(_engine_args(out[base.workload_key(replica.spec.engines[0])]))
+    container, config_yaml, secrets = _picker(replica, _unified_epp_config_yaml(block_size))
     selector = {base.LABEL_SERVING: base.serving_label(replica)}
     ns = base.remote_namespace(replica)
     out["inference-pool"] = base.wrap_object(provider_config, _inference_pool(name, ns, selector))

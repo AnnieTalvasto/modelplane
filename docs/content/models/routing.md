@@ -387,6 +387,13 @@ spec:
 at least 64. llm-d's picker raises a smaller value to 64, so its prefix index
 doesn't run the picker out of memory.
 
+`maxPrefixTokensToMatch` is how many leading tokens of a prompt the picker
+hashes and matches. Prompts that share more than that look the same to it.
+Modelplane sets it from the engine's `--max-model-len` or `--context-length`,
+and uses llm-d's default of 131072 when the engine sets neither. llm-d uses
+`maxPrefixBlocksToMatch` only when `maxPrefixTokensToMatch` is 0, so the
+configuration doesn't set it.
+
 ```yaml {nocopy=true}
 apiVersion: llm-d.ai/v1alpha1
 kind: EndpointPickerConfig
@@ -395,7 +402,7 @@ plugins:
   parameters:
     autoTune: false
     blockSizeTokens: 64
-    maxPrefixBlocksToMatch: 256
+    maxPrefixTokensToMatch: 131072
     lruCapacityPerServer: 31250
 - type: prefix-cache-scorer
 - type: queue-scorer
@@ -411,9 +418,9 @@ schedulingProfiles:
 ```
 
 For `PrefillDecode`, this configuration is a starting point for vLLM. Copy it
-into `config`, and set `blockSizeTokens` to the engine's block size, or 64 if
-that's larger. SGLang needs `always-disagg-pd-decider` in place of
-`prefix-based-pd-decider`.
+into `config`, set `blockSizeTokens` to the engine's block size, or 64 if
+that's larger, and set `maxPrefixTokensToMatch` to the engine's context length.
+SGLang needs `always-disagg-pd-decider` in place of `prefix-based-pd-decider`.
 
 ```yaml
 apiVersion: llm-d.ai/v1alpha1
@@ -423,7 +430,7 @@ plugins:
   parameters:
     autoTune: false
     blockSizeTokens: 64
-    maxPrefixBlocksToMatch: 256
+    maxPrefixTokensToMatch: 131072
     lruCapacityPerServer: 31250
 - type: prefix-cache-scorer
 - type: queue-scorer

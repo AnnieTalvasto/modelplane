@@ -387,16 +387,9 @@ spec:
 at least 64. llm-d's picker raises a smaller value to 64, so its prefix index
 doesn't run the picker out of memory.
 
-`maxPrefixTokensToMatch` is how many leading tokens of a prompt the picker
-hashes and matches. Modelplane sets it to 131072, llm-d's own default, so the
-picker considers only the first 128K tokens of a prompt. Longer prompts that
-share those tokens get the same prefix score, even when they differ after them,
-such as two coding agent sessions with a long common history. The limit applies
-only to the picker's routing score. It doesn't limit the prompts the engine
-accepts or what the engine caches. Unless its configuration sets a tokenizer,
-the picker counts four bytes of a request as one token, so the limit is
-approximate. llm-d uses `maxPrefixBlocksToMatch` only when
-`maxPrefixTokensToMatch` is 0, so the configuration doesn't set it.
+`maxPrefixTokensToMatch` is set to 131072, llm-d's own default, so the picker
+scores prefix matches on the first 128K tokens of a prompt. It doesn't limit the
+prompts the engine accepts.
 
 ```yaml {nocopy=true}
 apiVersion: llm-d.ai/v1alpha1
@@ -421,56 +414,8 @@ schedulingProfiles:
     weight: 1
 ```
 
-To match a different length, set `serving.router: EndpointPicker`, write llm-d's
-picker as the [`epp` container](#the-endpoint-picker), and copy this
-configuration into `serving.endpointPicker.config` with your value. Keep
-`blockSizeTokens` at the engine's block size, or 64 if that's larger. `config`
-replaces the default configuration rather than merging with it, so copy the
-whole of it:
-
-```yaml {nocopy=true}
-serving:
-  router: EndpointPicker
-  endpointPicker:
-    template:
-      spec:
-        containers:
-        - name: epp
-          image: ghcr.io/llm-d/llm-d-router-endpoint-picker:v0.9.0
-          args:
-          - --pool-name=$(MODELPLANE_POOL_NAME)
-          - --pool-namespace=$(MODELPLANE_POOL_NAMESPACE)
-          - --pool-group=inference.networking.k8s.io
-          - --config-file=$(MODELPLANE_PICKER_CONFIG)
-          - --grpc-port=$(MODELPLANE_GRPC_PORT)
-          - --grpc-health-port=$(MODELPLANE_GRPC_HEALTH_PORT)
-          - --metrics-port=$(MODELPLANE_METRICS_PORT)
-          - --metrics-endpoint-auth=false
-    config:
-      apiVersion: llm-d.ai/v1alpha1
-      kind: EndpointPickerConfig
-      plugins:
-      - type: approx-prefix-cache-producer
-        parameters:
-          autoTune: false
-          blockSizeTokens: 64
-          maxPrefixTokensToMatch: 262144
-          lruCapacityPerServer: 31250
-      - type: prefix-cache-scorer
-      - type: queue-scorer
-      - type: max-score-picker
-      schedulingProfiles:
-      - name: default
-        plugins:
-        - pluginRef: max-score-picker
-        - pluginRef: prefix-cache-scorer
-          weight: 2
-        - pluginRef: queue-scorer
-          weight: 1
-```
-
-A larger value costs the picker more hashing per long prompt, and gives a long
-prompt more of the picker's prefix index.
+To change it, write the whole configuration in `config`, as
+[The endpoint picker](#the-endpoint-picker) describes.
 
 For `PrefillDecode`, this configuration is a starting point for vLLM. Copy it
 into `config`, and set `blockSizeTokens` to the engine's block size, or 64 if

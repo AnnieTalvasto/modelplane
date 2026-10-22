@@ -387,6 +387,10 @@ spec:
 at least 64. llm-d's picker raises a smaller value to 64, so its prefix index
 doesn't run the picker out of memory.
 
+`maxPrefixTokensToMatch` is set to 131072, llm-d's own default, so the picker
+scores prefix matches on the first 128K tokens of a prompt. It doesn't limit the
+prompts the engine accepts.
+
 ```yaml {nocopy=true}
 apiVersion: llm-d.ai/v1alpha1
 kind: EndpointPickerConfig
@@ -395,7 +399,7 @@ plugins:
   parameters:
     autoTune: false
     blockSizeTokens: 64
-    maxPrefixBlocksToMatch: 256
+    maxPrefixTokensToMatch: 131072
     lruCapacityPerServer: 31250
 - type: prefix-cache-scorer
 - type: queue-scorer
@@ -410,6 +414,9 @@ schedulingProfiles:
     weight: 1
 ```
 
+To change it, write the whole configuration in `config`, as
+[The endpoint picker](#the-endpoint-picker) describes.
+
 For `PrefillDecode`, this configuration is a starting point for vLLM. Copy it
 into `config`, and set `blockSizeTokens` to the engine's block size, or 64 if
 that's larger. SGLang needs `always-disagg-pd-decider` in place of
@@ -423,7 +430,7 @@ plugins:
   parameters:
     autoTune: false
     blockSizeTokens: 64
-    maxPrefixBlocksToMatch: 256
+    maxPrefixTokensToMatch: 131072
     lruCapacityPerServer: 31250
 - type: prefix-cache-scorer
 - type: queue-scorer

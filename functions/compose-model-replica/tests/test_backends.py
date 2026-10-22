@@ -7058,7 +7058,7 @@ APPLY_CASES = [
                 "  parameters:\n"
                 "    autoTune: false\n"
                 "    blockSizeTokens: 64\n"
-                "    maxPrefixBlocksToMatch: 256\n"
+                "    maxPrefixTokensToMatch: 131072\n"
                 "    lruCapacityPerServer: 31250\n"
                 "- type: prefix-cache-scorer\n"
                 "- type: queue-scorer\n"
@@ -7077,7 +7077,7 @@ APPLY_CASES = [
                 app="r-epp",
                 labels={"app": "r-epp", "modelplane.ai/role": "picker"},
                 annotations={
-                    "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
+                    "modelplane.ai/epp-config-checksum": "c4f1cefa4a1fe67069eaa6e9dde3e5b9bc7e79d3f807ecd076dd021259b2ab39"
                 },
                 containers=[_llm_d_epp_container(pool="r-pool")],
                 volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
@@ -7212,7 +7212,7 @@ APPLY_CASES = [
                 "  parameters:\n"
                 "    autoTune: false\n"
                 "    blockSizeTokens: 128\n"
-                "    maxPrefixBlocksToMatch: 256\n"
+                "    maxPrefixTokensToMatch: 131072\n"
                 "    lruCapacityPerServer: 31250\n"
                 "- type: prefix-cache-scorer\n"
                 "- type: queue-scorer\n"
@@ -7231,7 +7231,161 @@ APPLY_CASES = [
                 app="r-epp",
                 labels={"app": "r-epp", "modelplane.ai/role": "picker"},
                 annotations={
-                    "modelplane.ai/epp-config-checksum": "6d541823f691c0fad7e169bf03c3b7b14b766dc3e795deaae7050c11eeea6eab"
+                    "modelplane.ai/epp-config-checksum": "b27a3ca7704900471ee618c2a3a004560b66ab0db1215461ef81345ca34371f7"
+                },
+                containers=[_llm_d_epp_container(pool="r-pool")],
+                volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
+                image_pull_secrets=None,
+            ),
+            "epp-service": _epp_service(name="r-epp", app="r-epp"),
+        },
+    ),
+    ApplyCase(
+        name="UnifiedLongContext",
+        reason="An engine context length above 131072 leaves the default picker configuration's maxPrefixTokensToMatch at 131072.",
+        composed={
+            "model-serving-main": _deployment(
+                name="r-main-bb4e3",
+                claim_template_name="r-main-standalone-devices-f456f",
+                replicas=1,
+                pod_metadata={
+                    "labels": {
+                        "modelplane.ai/engine": "main",
+                        "modelplane.ai/role": "Standalone",
+                        "modelplane.ai/serving": "r",
+                        "modelplane.ai/workload": "r-main-bb4e3",
+                    }
+                },
+                containers=[
+                    {
+                        "name": "engine",
+                        "image": "vllm/vllm-openai:latest",
+                        "args": ["--model=Qwen/Qwen3-0.6B", "--max-model-len=262144"],
+                        "ports": [{"name": "http", "containerPort": 8000}],
+                        "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
+                        "readinessProbe": {
+                            "httpGet": {"path": "/health", "port": 8000},
+                            "initialDelaySeconds": 30,
+                            "periodSeconds": 10,
+                            "timeoutSeconds": 5,
+                        },
+                        "resources": {"claims": [{"name": "devices"}]},
+                    }
+                ],
+                volumes=[{"name": "dshm", "emptyDir": {"medium": "Memory"}}],
+            ),
+            "resource-claim-main-standalone": _claim_template(name="r-main-standalone-devices-f456f", count=1),
+        },
+        replica=_replica(
+            name="r",
+            namespace="ml-team",
+            cluster_name="cluster-a",
+            labels=None,
+            model_cache_ref=None,
+            serving=None,
+            engines=[
+                v1alpha1.Engine(
+                    name="main",
+                    copies=1,
+                    members=[
+                        v1alpha1.Member(
+                            role="Standalone",
+                            nodePoolName="frontier",
+                            deviceRequests=[
+                                v1alpha1.DeviceRequest(
+                                    name="gpu",
+                                    deviceClassName="gpu.nvidia.com",
+                                    count=1,
+                                    selectors=[
+                                        v1alpha1.Selector(
+                                            cel='device.capacity["gpu.nvidia.com"].memory.compareTo(quantity("80Gi")) >= 0'
+                                        )
+                                    ],
+                                )
+                            ],
+                            template=v1alpha1.Template(
+                                spec=v1alpha1.Spec(
+                                    containers=[
+                                        v1alpha1.Container(
+                                            name="engine",
+                                            image="vllm/vllm-openai:latest",
+                                            args=["--model=Qwen/Qwen3-0.6B", "--max-model-len=262144"],
+                                        )
+                                    ]
+                                )
+                            ),
+                        )
+                    ],
+                )
+            ],
+        ),
+        provider_config="cluster-a-pc",
+        want={
+            "model-serving-main": _deployment(
+                name="r-main-bb4e3",
+                claim_template_name="r-main-standalone-devices-f456f",
+                replicas=1,
+                pod_metadata={
+                    "labels": {
+                        "modelplane.ai/engine": "main",
+                        "modelplane.ai/role": "Standalone",
+                        "modelplane.ai/serving": "r",
+                        "modelplane.ai/workload": "r-main-bb4e3",
+                    }
+                },
+                containers=[
+                    {
+                        "name": "engine",
+                        "image": "vllm/vllm-openai:latest",
+                        "args": ["--model=Qwen/Qwen3-0.6B", "--max-model-len=262144"],
+                        "ports": [{"name": "http", "containerPort": 8000}],
+                        "volumeMounts": [{"name": "dshm", "mountPath": "/dev/shm"}],
+                        "readinessProbe": {
+                            "httpGet": {"path": "/health", "port": 8000},
+                            "initialDelaySeconds": 30,
+                            "periodSeconds": 10,
+                            "timeoutSeconds": 5,
+                        },
+                        "resources": {"claims": [{"name": "devices"}]},
+                    }
+                ],
+                volumes=[{"name": "dshm", "emptyDir": {"medium": "Memory"}}],
+            ),
+            "resource-claim-main-standalone": _claim_template(name="r-main-standalone-devices-f456f", count=1),
+            "inference-pool": _inference_pool(name="r-pool", serving="r", picker="r-epp"),
+            "model-route": _route(name="r", path="/ml-team/r/", pool="r-pool"),
+            "epp-serviceaccount": _epp_service_account(name="r-epp"),
+            "epp-role": _epp_role(name="r-epp"),
+            "epp-rolebinding": _epp_role_binding(name="r-epp"),
+            "epp-config": _epp_config(
+                name="r-epp",
+                config="apiVersion: llm-d.ai/v1alpha1\n"
+                "kind: EndpointPickerConfig\n"
+                "plugins:\n"
+                "- type: approx-prefix-cache-producer\n"
+                "  parameters:\n"
+                "    autoTune: false\n"
+                "    blockSizeTokens: 64\n"
+                "    maxPrefixTokensToMatch: 131072\n"
+                "    lruCapacityPerServer: 31250\n"
+                "- type: prefix-cache-scorer\n"
+                "- type: queue-scorer\n"
+                "- type: max-score-picker\n"
+                "schedulingProfiles:\n"
+                "- name: default\n"
+                "  plugins:\n"
+                "  - pluginRef: max-score-picker\n"
+                "  - pluginRef: prefix-cache-scorer\n"
+                "    weight: 2\n"
+                "  - pluginRef: queue-scorer\n"
+                "    weight: 1\n",
+            ),
+            "epp": _epp(
+                name="r-epp",
+                app="r-epp",
+                labels={"app": "r-epp", "modelplane.ai/role": "picker"},
+                annotations={
+                    "modelplane.ai/epp-config-checksum": "c4f1cefa4a1fe67069eaa6e9dde3e5b9bc7e79d3f807ecd076dd021259b2ab39"
                 },
                 containers=[_llm_d_epp_container(pool="r-pool")],
                 volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
@@ -7754,7 +7908,7 @@ APPLY_CASES = [
                 "  parameters:\n"
                 "    autoTune: false\n"
                 "    blockSizeTokens: 64\n"
-                "    maxPrefixBlocksToMatch: 256\n"
+                "    maxPrefixTokensToMatch: 131072\n"
                 "    lruCapacityPerServer: 31250\n"
                 "- type: prefix-cache-scorer\n"
                 "- type: queue-scorer\n"
@@ -7778,7 +7932,7 @@ APPLY_CASES = [
                     "modelplane.ai/replica": "2",
                 },
                 annotations={
-                    "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
+                    "modelplane.ai/epp-config-checksum": "c4f1cefa4a1fe67069eaa6e9dde3e5b9bc7e79d3f807ecd076dd021259b2ab39"
                 },
                 containers=[_llm_d_epp_container(pool="r-pool")],
                 volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
@@ -7915,7 +8069,7 @@ APPLY_CASES = [
                 "  parameters:\n"
                 "    autoTune: false\n"
                 "    blockSizeTokens: 64\n"
-                "    maxPrefixBlocksToMatch: 256\n"
+                "    maxPrefixTokensToMatch: 131072\n"
                 "    lruCapacityPerServer: 31250\n"
                 "- type: prefix-cache-scorer\n"
                 "- type: queue-scorer\n"
@@ -7934,7 +8088,7 @@ APPLY_CASES = [
                 app="r-epp",
                 labels={"app": "r-epp", "modelplane.ai/role": "picker"},
                 annotations={
-                    "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
+                    "modelplane.ai/epp-config-checksum": "c4f1cefa4a1fe67069eaa6e9dde3e5b9bc7e79d3f807ecd076dd021259b2ab39"
                 },
                 containers=[_llm_d_epp_container(pool="r-pool")],
                 volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
@@ -8167,7 +8321,7 @@ APPLY_CASES = [
                 "  parameters:\n"
                 "    autoTune: false\n"
                 "    blockSizeTokens: 64\n"
-                "    maxPrefixBlocksToMatch: 256\n"
+                "    maxPrefixTokensToMatch: 131072\n"
                 "    lruCapacityPerServer: 31250\n"
                 "- type: prefix-cache-scorer\n"
                 "- type: queue-scorer\n"
@@ -8186,7 +8340,7 @@ APPLY_CASES = [
                 app="r-epp",
                 labels={"app": "r-epp", "modelplane.ai/role": "picker"},
                 annotations={
-                    "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
+                    "modelplane.ai/epp-config-checksum": "c4f1cefa4a1fe67069eaa6e9dde3e5b9bc7e79d3f807ecd076dd021259b2ab39"
                 },
                 containers=[_llm_d_epp_container(pool="r-pool")],
                 volumes=[{"name": "config", "configMap": {"name": "r-epp"}}],
@@ -8336,7 +8490,7 @@ APPLY_CASES = [
                 "  parameters:\n"
                 "    autoTune: false\n"
                 "    blockSizeTokens: 64\n"
-                "    maxPrefixBlocksToMatch: 256\n"
+                "    maxPrefixTokensToMatch: 131072\n"
                 "    lruCapacityPerServer: 31250\n"
                 "- type: prefix-cache-scorer\n"
                 "- type: queue-scorer\n"
@@ -8355,7 +8509,7 @@ APPLY_CASES = [
                 app="qwen2.5-7b-abcde-epp",
                 labels={"app": "qwen2.5-7b-abcde-epp", "modelplane.ai/role": "picker"},
                 annotations={
-                    "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
+                    "modelplane.ai/epp-config-checksum": "c4f1cefa4a1fe67069eaa6e9dde3e5b9bc7e79d3f807ecd076dd021259b2ab39"
                 },
                 containers=[_llm_d_epp_container(pool="qwen2.5-7b-abcde-pool")],
                 volumes=[{"name": "config", "configMap": {"name": "qwen2.5-7b-abcde-epp"}}],
@@ -8501,7 +8655,7 @@ APPLY_CASES = [
                 "  parameters:\n"
                 "    autoTune: false\n"
                 "    blockSizeTokens: 64\n"
-                "    maxPrefixBlocksToMatch: 256\n"
+                "    maxPrefixTokensToMatch: 131072\n"
                 "    lruCapacityPerServer: 31250\n"
                 "- type: prefix-cache-scorer\n"
                 "- type: queue-scorer\n"
@@ -8520,7 +8674,7 @@ APPLY_CASES = [
                 app="epp-" + "a" * 53 + "-2dd65",
                 labels={"app": "epp-" + "a" * 53 + "-2dd65", "modelplane.ai/role": "picker"},
                 annotations={
-                    "modelplane.ai/epp-config-checksum": "bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007"
+                    "modelplane.ai/epp-config-checksum": "c4f1cefa4a1fe67069eaa6e9dde3e5b9bc7e79d3f807ecd076dd021259b2ab39"
                 },
                 containers=[_llm_d_epp_container(pool="a" * 57 + "-abcde-pool")],
                 volumes=[{"name": "config", "configMap": {"name": "a" * 57 + "-abcde-epp"}}],

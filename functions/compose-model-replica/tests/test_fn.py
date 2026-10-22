@@ -531,7 +531,7 @@ def _epp_config(*, ready: fnv1.Ready) -> fnv1.Resource:
                                     "  parameters:\n"
                                     "    autoTune: false\n"
                                     "    blockSizeTokens: 64\n"
-                                    "    maxPrefixBlocksToMatch: 256\n"
+                                    "    maxPrefixTokensToMatch: 131072\n"
                                     "    lruCapacityPerServer: 31250\n"
                                     "- type: prefix-cache-scorer\n"
                                     "- type: queue-scorer\n"
@@ -1023,7 +1023,7 @@ COMPOSE_CASES = [
                     "inference-pool": _inference_pool(ready=fnv1.READY_UNSPECIFIED),
                     "epp": _epp(
                         ready=fnv1.READY_UNSPECIFIED,
-                        config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                        config_checksum="c4f1cefa4a1fe67069eaa6e9dde3e5b9bc7e79d3f807ecd076dd021259b2ab39",
                     ),
                     "epp-config": _epp_config(ready=fnv1.READY_UNSPECIFIED),
                     "epp-role": _epp_role(ready=fnv1.READY_UNSPECIFIED),
@@ -1190,7 +1190,7 @@ COMPOSE_CASES = [
                     "inference-pool": _inference_pool(ready=fnv1.READY_UNSPECIFIED),
                     "epp": _epp(
                         ready=fnv1.READY_UNSPECIFIED,
-                        config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                        config_checksum="c4f1cefa4a1fe67069eaa6e9dde3e5b9bc7e79d3f807ecd076dd021259b2ab39",
                     ),
                     "epp-config": _epp_config(ready=fnv1.READY_UNSPECIFIED),
                     "epp-role": _epp_role(ready=fnv1.READY_UNSPECIFIED),
@@ -1264,7 +1264,7 @@ COMPOSE_CASES = [
                     "inference-pool": _inference_pool(ready=fnv1.READY_TRUE),
                     "epp": _epp(
                         ready=fnv1.READY_TRUE,
-                        config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                        config_checksum="c4f1cefa4a1fe67069eaa6e9dde3e5b9bc7e79d3f807ecd076dd021259b2ab39",
                     ),
                     "epp-config": _epp_config(ready=fnv1.READY_TRUE),
                     "epp-role": _epp_role(ready=fnv1.READY_TRUE),
@@ -1339,7 +1339,7 @@ COMPOSE_CASES = [
                     "inference-pool": _inference_pool(ready=fnv1.READY_TRUE),
                     "epp": _epp(
                         ready=fnv1.READY_UNSPECIFIED,
-                        config_checksum="bf2146be008c2e12bb555e5406e1d419b2b8159aa3b2984623e385d3cf934007",
+                        config_checksum="c4f1cefa4a1fe67069eaa6e9dde3e5b9bc7e79d3f807ecd076dd021259b2ab39",
                     ),
                     "epp-config": _epp_config(ready=fnv1.READY_TRUE),
                     "epp-role": _epp_role(ready=fnv1.READY_TRUE),

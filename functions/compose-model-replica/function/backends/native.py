@@ -115,7 +115,9 @@ class NativeBackend:
         }
 
         composed = {
-            base.workload_key(engine): base.wrap_object(provider_config, deployment, cel_query=base.AVAILABLE_CEL),
+            base.workload_key(engine): base.wrap_object(
+                provider_config, deployment, cel_query=base.ALL_COPIES_READY_CEL, watch=True
+            ),
         }
         # Gated like the container's resources above, and for the same reason.
         if member.deviceRequests:

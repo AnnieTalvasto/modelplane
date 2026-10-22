@@ -40,6 +40,7 @@ from function.backends import base, grove, llmd, native
 
 # Condition types and reasons for the ModelReplica XR.
 CONDITION_TYPE_MODEL_ACCEPTED = "ModelAccepted"
+CONDITION_TYPE_MODEL_SERVING = "ModelServing"
 CONDITION_TYPE_MODEL_READY = "ModelReady"
 
 CONDITION_REASON_WAITING_FOR_CLUSTER = "WaitingForCluster"
@@ -47,6 +48,9 @@ CONDITION_REASON_WAITING_FOR_MODEL = "WaitingForModel"
 CONDITION_REASON_DEPLOYING = "Deploying"
 CONDITION_REASON_ACCEPTED = "Accepted"
 CONDITION_REASON_SERVING = "Serving"
+CONDITION_REASON_DEGRADED = "Degraded"
+CONDITION_REASON_WAITING_FOR_ROUTING = "WaitingForRouting"
+CONDITION_REASON_ALL_COPIES_READY = "AllCopiesReady"
 CONDITION_REASON_MODEL_STARTING = "ModelStarting"
 
 # Backend registry: an engine's member roles select which one composes its
@@ -112,6 +116,9 @@ class Composer:
             response.set_conditions(
                 self.rsp,
                 resource.Condition(
+                    typ=CONDITION_TYPE_MODEL_SERVING, status="False", reason=CONDITION_REASON_WAITING_FOR_MODEL
+                ),
+                resource.Condition(
                     typ=CONDITION_TYPE_MODEL_READY, status="False", reason=CONDITION_REASON_WAITING_FOR_MODEL
                 ),
             )
@@ -132,6 +139,9 @@ class Composer:
             )
             response.set_conditions(
                 self.rsp,
+                resource.Condition(
+                    typ=CONDITION_TYPE_MODEL_SERVING, status="False", reason=CONDITION_REASON_WAITING_FOR_MODEL
+                ),
                 resource.Condition(
                     typ=CONDITION_TYPE_MODEL_READY, status="False", reason=CONDITION_REASON_WAITING_FOR_MODEL
                 ),
@@ -192,60 +202,105 @@ class Composer:
             response.normal(self.rsp, f"Composing {image} on {self.xr.spec.clusterName}")
 
     def derive_conditions(self) -> None:
-        """Derive ModelAccepted and ModelReady across all of the replica's engines.
+        """Derive ModelAccepted, ModelServing and ModelReady.
 
-        A replica is accepted when every engine's workload has been created on the
-        cluster, and ready when every engine's workload is serving. A
-        disaggregated or replicated-engine replica composes several workloads;
-        all must be up for the replica to serve.
+        Each implies the one before it, so the first False one says what the
+        replica is waiting on. ModelAccepted is True once every engine's
+        workload exists on the cluster. ModelServing is True once at least one
+        copy of every engine is ready and the routing in front of them is in
+        place, so the replica can take traffic. ModelReady is True once every
+        copy is ready, so the replica is at full capacity; the replica's Ready
+        mirrors it.
         """
-        workload_keys = base.workload_keys(self.xr)
+        engines = self.xr.spec.engines
+        observed = self.req.observed.resources
 
-        # A workload is accepted once provider-kubernetes populates its Object's
-        # atProvider.manifest (it observed the remote resource at least once),
-        # and ready once the Object reports Ready=True. The replica is accepted
-        # only when every workload is, and ready only when every workload is.
-        workload_accepted = all(self._workload_accepted(k) for k in workload_keys)
-        workload_ready = all(
-            resource.get_condition(self.req.observed.resources.get(k), "Ready").status == "True" for k in workload_keys
-        )
+        def ready(key: str) -> bool:
+            return resource.get_condition(observed.get(key), "Ready").status == "True"
 
-        # ModelAccepted: the workloads were created on the cluster.
-        accepted_reason = CONDITION_REASON_ACCEPTED if workload_accepted else CONDITION_REASON_DEPLOYING
+        # The PrefillDecode routing check stops composing with a fatal result,
+        # which leaves nothing desired. Crossplane keeps the existing resources
+        # then, so judge the replica on what it observes.
+        keys = set(self.rsp.desired.resources) or set(observed)
+        workload = {base.workload_key(e) for e in engines} | {base.scaling_group_key(e) for e in engines}
+        routing_ready = all(ready(k) for k in keys - workload)
+
+        accepted = all(self._workload_accepted(base.workload_key(e)) for e in engines)
+        serving = accepted and routing_ready and all(self._copies_ready(e) > 0 for e in engines)
+        full = serving and all(ready(k) for k in keys)
+
+        copies = sum(int(e.copies or 1) for e in engines)
+        copies_ready = sum(min(self._copies_ready(e), int(e.copies or 1)) for e in engines)
+        copies_msg = f"{copies_ready} of {copies} engine copies ready"
+
+        if serving:
+            waiting = CONDITION_REASON_DEGRADED
+        elif accepted and all(self._copies_ready(e) > 0 for e in engines):
+            waiting = CONDITION_REASON_WAITING_FOR_ROUTING
+        elif accepted:
+            waiting = CONDITION_REASON_MODEL_STARTING
+        else:
+            waiting = CONDITION_REASON_WAITING_FOR_MODEL
         response.set_conditions(
             self.rsp,
             resource.Condition(
                 typ=CONDITION_TYPE_MODEL_ACCEPTED,
-                status="True" if workload_accepted else "False",
-                reason=accepted_reason,
+                status="True" if accepted else "False",
+                reason=CONDITION_REASON_ACCEPTED if accepted else CONDITION_REASON_DEPLOYING,
             ),
-        )
-
-        # ModelReady: the model is actually serving traffic.
-        if workload_ready:
-            ready_reason = CONDITION_REASON_SERVING
-        elif workload_accepted:
-            ready_reason = CONDITION_REASON_MODEL_STARTING
-        else:
-            ready_reason = CONDITION_REASON_WAITING_FOR_MODEL
-        response.set_conditions(
-            self.rsp,
             resource.Condition(
-                typ=CONDITION_TYPE_MODEL_READY, status="True" if workload_ready else "False", reason=ready_reason
+                typ=CONDITION_TYPE_MODEL_SERVING,
+                status="True" if serving else "False",
+                reason=CONDITION_REASON_SERVING if serving else waiting,
+            ),
+            resource.Condition(
+                typ=CONDITION_TYPE_MODEL_READY,
+                status="True" if full else "False",
+                reason=CONDITION_REASON_ALL_COPIES_READY if full else waiting,
+                message=copies_msg,
             ),
         )
 
         # Per-resource readiness. Crossplane gates the XR's Ready on every
         # composed resource being ready, but doesn't read a composed resource's
         # own Ready condition, so the function relays it. Each Object's
-        # readiness policy decides that condition: a workload and the endpoint
-        # picker are Ready once their CEL query sees them available, anything
-        # else once applied. Envoy AI Gateway fails closed without a picker,
-        # whatever the pool's failureMode says, so the replica can't serve
-        # until its picker is available.
+        # readiness policy decides that condition: a workload once every copy is
+        # ready, the endpoint picker once its CEL query sees it available,
+        # anything else once applied. Envoy AI Gateway fails closed without a
+        # picker, whatever the pool's failureMode says, so the replica can't
+        # serve until its picker is available.
         for key in self.rsp.desired.resources:
-            if resource.get_condition(self.req.observed.resources.get(key), "Ready").status == "True":
+            if ready(key):
                 self.rsp.desired.resources[key].ready = fnv1.READY_TRUE
+
+    def _copies_ready(self, engine: v1alpha1.Engine) -> int:
+        """How many copies of an engine are ready, from its observed workload.
+
+        A Deployment counts ready pods and a LeaderWorkerSet ready groups,
+        each one copy. Grove's scaling group counts available copies; until it's
+        observed, a ready PodCliqueSet means at least one copy is.
+        """
+        group = self._observed_status(base.scaling_group_key(engine))
+        if group is not None:
+            return int(group.get("availableReplicas") or 0)
+        key = base.workload_key(engine)
+        status = self._observed_status(key)
+        if status is None:
+            return 0
+        if "readyReplicas" in status:
+            return int(status.get("readyReplicas") or 0)
+        return 1 if resource.get_condition(self.req.observed.resources.get(key), "Ready").status == "True" else 0
+
+    def _observed_status(self, key: str) -> dict | None:
+        """The status of the remote resource an Object observes, or None."""
+        observed = self.req.observed.resources.get(key)
+        if not observed:
+            return None
+        obj = k8sobjv1alpha1.Object.model_validate(resource.struct_to_dict(observed.resource))
+        if not (obj.status and obj.status.atProvider and obj.status.atProvider.manifest):
+            return None
+        status = obj.status.atProvider.manifest.get("status")
+        return status if isinstance(status, dict) else {}
 
     def _workload_accepted(self, key: str) -> bool:
         """Whether a workload Object has been created on the remote cluster.

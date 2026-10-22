@@ -422,6 +422,7 @@ GROVE_QUEUE = "modelplane"
 # don't collide in the response map.
 ROUTE_KEY = "model-route"
 _WORKLOAD_KEY = "model-serving"
+_SCALING_GROUP_KEY = "scaling-group"
 _CLAIM_KEY = "resource-claim"
 
 # HTTPRoute request timeout for model traffic. "0s" disables it (Gateway API
@@ -437,6 +438,11 @@ REQUEST_TIMEOUT = "0s"
 def workload_key(engine: v1alpha1.Engine) -> str:
     """Response key for an engine's workload (Deployment, LeaderWorkerSet, or PodCliqueSet)."""
     return f"{_WORKLOAD_KEY}-{engine.name}"
+
+
+def scaling_group_key(engine: v1alpha1.Engine) -> str:
+    """Response key for the observed Grove PodCliqueScalingGroup of an engine."""
+    return f"{_SCALING_GROUP_KEY}-{engine.name}"
 
 
 def member_role(member: v1alpha1.Member) -> str:
@@ -479,9 +485,8 @@ _DRA_API_VERSION = "resource.k8s.io/v1"
 # reference individual requests within the claim.
 _POD_CLAIM_NAME = "devices"
 
-# CEL readiness query matching a Deployment's or LeaderWorkerSet's
-# all-replicas-available signal, an Available=True condition. Both publish this
-# condition when their desired replicas are up but neither publishes a Ready
+# CEL readiness query matching a Deployment's or LeaderWorkerSet's Available=True
+# condition. Both publish this condition but neither publishes a Ready
 # condition, so provider-kubernetes' DeriveFromObject policy (which only checks a
 # Ready condition) can never mark them ready. The has() guard keeps the query
 # false (not erroring) before the workload first writes status.conditions.
@@ -489,15 +494,34 @@ AVAILABLE_CEL = (
     'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")'
 )
 
+# CEL readiness query for an engine's Deployment or LeaderWorkerSet with every
+# copy ready. Available alone isn't enough: a Deployment stays Available with up
+# to its maxUnavailable (25% by default) of copies down. So the query also
+# requires a ready pod, or ready group, per copy.
+ALL_COPIES_READY_CEL = (
+    AVAILABLE_CEL + " && has(object.status.readyReplicas) && object.status.readyReplicas >= object.spec.replicas"
+)
+
 # Grove publishes no Ready or Available condition on a PodCliqueSet, so
 # readiness comes from its replica counters: a replica counts as available once
 # every clique and scaling group is at or above minAvailable. observedGeneration
 # guards against a count left over from before the last spec change.
 # status.podGangStatuses looks useful here but Grove never populates it.
+#
+# The scaling group's minAvailable is 1, so this is true once one copy of the
+# engine is up. GROVE_ALL_COPIES_READY_CEL counts every copy.
 GROVE_AVAILABLE_CEL = (
     "has(object.status) && has(object.status.observedGeneration) && "
     "object.status.observedGeneration == object.metadata.generation && "
     "object.spec.replicas > 0 && has(object.status.availableReplicas) && "
+    "object.status.availableReplicas >= object.spec.replicas"
+)
+
+# CEL readiness query for a Grove PodCliqueScalingGroup with every copy
+# available. Its availableReplicas counts the copies whose cliques are all at or
+# above their minAvailable.
+GROVE_ALL_COPIES_READY_CEL = (
+    "has(object.status) && has(object.status.availableReplicas) && "
     "object.status.availableReplicas >= object.spec.replicas"
 )
 
@@ -508,6 +532,7 @@ def wrap_object(
     *,
     cel_query: str | None = None,
     watch: bool = False,
+    observe_only: bool = False,
 ) -> k8sobjv1alpha1.Object:
     """Wrap a raw manifest in a provider-kubernetes Object for a remote cluster.
 
@@ -515,9 +540,10 @@ def wrap_object(
     That's right for resources with no meaningful runtime readiness (a Service,
     an HTTPRoute, or a ResourceClaimTemplate that's never reconciled). Pass
     cel_query for a workload whose readiness must reflect its observed status -
-    it selects the DeriveFromCelQuery policy with that query (see AVAILABLE_CEL).
+    it selects the DeriveFromCelQuery policy with that query (see ALL_COPIES_READY_CEL).
     Pass watch to have provider-kubernetes update the Object as soon as the
-    resource changes, rather than on its next poll or resync.
+    resource changes, rather than on its next poll or resync. Pass observe_only
+    for a resource something else creates, which the Object only reads.
     """
     readiness = (
         k8sobjv1alpha1.Readiness(policy="DeriveFromCelQuery", celQuery=cel_query)
@@ -534,6 +560,8 @@ def wrap_object(
     )
     if watch:
         spec.watch = True
+    if observe_only:
+        spec.managementPolicies = ["Observe"]
     return k8sobjv1alpha1.Object(spec=spec)
 
 

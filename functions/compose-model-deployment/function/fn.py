@@ -37,6 +37,7 @@ from function import cel, name, scheduling
 
 # Condition types and reasons for the ModelDeployment XR.
 CONDITION_TYPE_REPLICAS_SCHEDULED = "ReplicasScheduled"
+CONDITION_TYPE_REPLICAS_SERVING = "ReplicasServing"
 CONDITION_TYPE_REPLICAS_READY = "ReplicasReady"
 # ModelCacheResolved reports whether the referenced ModelCache could be read.
 # It's independent of ReplicasScheduled: a deployment can hold retained replicas
@@ -54,6 +55,8 @@ CONDITION_REASON_REPLICAS_CREATED = "ReplicasCreated"
 CONDITION_REASON_SCHEDULING = "Scheduling"
 CONDITION_REASON_NO_REPLICAS_SCHEDULED = "NoReplicasScheduled"
 CONDITION_REASON_ALL_REPLICAS_READY = "AllReplicasReady"
+CONDITION_REASON_SERVING = "Serving"
+CONDITION_REASON_DEGRADED = "Degraded"
 CONDITION_REASON_MODEL_STARTING = "ModelStarting"
 CONDITION_REASON_NO_REPLICAS_DESIRED = "NoReplicasDesired"
 
@@ -65,6 +68,9 @@ _LABEL_DEPLOYMENT = "modelplane.ai/deployment"
 # Read back by the scheduler to reconstruct a replica's (cluster, index)
 # identity from observed state. Not an ordering - just a collision breaker.
 _LABEL_INDEX = "modelplane.ai/replica-index"
+
+# The ModelReplica condition that's True while a replica can take traffic.
+_REPLICA_SERVING = "ModelServing"
 
 
 # The hop from an InferenceGateway to a cluster gateway crosses whatever network
@@ -551,21 +557,22 @@ class Composer:
         whole set rather than one per replica.
 
         A replica whose cluster has no hostname gets no endpoint, and so does
-        one whose ModelReplica isn't Ready. The replica's Ready tracks the
-        engine workloads and endpoint picker being available and the rest of the
-        routing objects in front of them being applied. Composing it any earlier
-        routes traffic at pods still pulling images or loading weights,
-        returning 503s during deployment and scale-up (#102). The endpoint
-        appears on the reconcile that first observes the replica Ready, and is
-        withdrawn again if the replica stops being Ready, pulling a dead backend
-        out of rotation.
+        one whose ModelReplica isn't serving. A replica is serving once at least
+        one copy of each of its engines is ready and its endpoint picker and the
+        routing in front of them are in place. Composing it any earlier routes
+        traffic at pods still pulling images or loading weights, returning 503s
+        during deployment and scale-up (#102). The endpoint appears on the
+        reconcile that first observes the replica serving, and is withdrawn
+        again if it stops, pulling a dead backend out of rotation. It isn't
+        withdrawn when one of several copies fails: the endpoint picker routes
+        only to ready pods, so the other copies keep serving.
         """
         for cluster_info in matched:
             if not cluster_info.gateway_hostname:
                 continue
 
             replica_observed = self.req.observed.resources.get(name.replica_key(cluster_info))
-            if resource.get_condition(replica_observed, "Ready").status != "True":
+            if resource.get_condition(replica_observed, _REPLICA_SERVING).status != "True":
                 continue
 
             # The replica name (== the ModelReplica and the backend's workload
@@ -597,7 +604,7 @@ class Composer:
     def report_scaled_to_zero(self) -> None:
         """Report a deployment deliberately parked at zero replicas.
 
-        Both conditions read True: at zero desired there is nothing left to
+        Every condition reads True: at zero desired there is nothing left to
         schedule or to wait on, the same way a Kubernetes Deployment at zero
         replicas reports Available. The NoReplicasDesired reason is what separates
         a parked deployment from one that wants replicas and can't place them.
@@ -615,6 +622,12 @@ class Composer:
             self.rsp,
             resource.Condition(
                 typ=CONDITION_TYPE_REPLICAS_SCHEDULED,
+                status="True",
+                reason=CONDITION_REASON_NO_REPLICAS_DESIRED,
+                message="0 replicas desired",
+            ),
+            resource.Condition(
+                typ=CONDITION_TYPE_REPLICAS_SERVING,
                 status="True",
                 reason=CONDITION_REASON_NO_REPLICAS_DESIRED,
                 message="0 replicas desired",
@@ -644,22 +657,31 @@ class Composer:
         resource.update_status(self.rsp.desired.composite, status)
 
     def derive_conditions(self, matched: list[scheduling.Candidate]) -> None:
-        """Derive ReplicasScheduled and ReplicasReady. Per-resource
-        readiness is marked here too."""
-        self.derive_replicas_scheduled(matched)
-        self.derive_replicas_ready(matched)
+        """Derive ReplicasScheduled, ReplicasServing and ReplicasReady, and the
+        deployment's Ready from them. Per-resource readiness is marked here too.
+
+        ReplicasScheduled and ReplicasReady count against spec.replicas, so a
+        deployment that could place only some of its replicas isn't Ready.
+        ReplicasServing is True while any replica is serving and routed, so a
+        degraded deployment still reports that it serves. Ready mirrors
+        ReplicasReady, and also needs the referenced ModelCache resolved: a
+        deployment that can't place a replacement replica isn't fully ready.
+        """
+        scheduled = self.derive_replicas_scheduled(matched)
+        self.derive_replicas_serving(matched)
+        all_ready = self.derive_replicas_ready(matched)
         self.mark_endpoint_readiness(matched)
 
-        # When no replicas are scheduled, explicitly mark not ready. Without
-        # this, an XR with no composed resources would be trivially ready.
-        if not matched:
+        # Left unset when ready, Crossplane still holds the XR unready until
+        # every composed replica and endpoint is.
+        if not (scheduled and all_ready and self.fill):
             self.rsp.desired.composite.ready = fnv1.READY_FALSE
 
-    def derive_replicas_scheduled(self, matched: list[scheduling.Candidate]) -> None:
-        """ReplicasScheduled: replicas placed and created."""
-        any_observed = any(name.replica_key(c) in self.req.observed.resources for c in matched)
-        scheduled = len(matched) > 0 and any_observed
+    def derive_replicas_scheduled(self, matched: list[scheduling.Candidate]) -> bool:
+        """ReplicasScheduled: every desired replica placed and created."""
         desired = int(self.xr.spec.replicas)
+        created = sum(1 for c in matched if name.replica_key(c) in self.req.observed.resources)
+        scheduled = created >= desired
 
         cache_ref = self.xr.spec.template.spec.modelCacheRef
         if not matched and cache_ref and not self.clusters:
@@ -670,12 +692,15 @@ class Composer:
         elif not matched:
             reason = CONDITION_REASON_INSUFFICIENT_CAPACITY
             msg = f"0 of {desired} replicas scheduled (checked {len(self.clusters)} clusters)"
+        elif len(matched) < desired:
+            reason = CONDITION_REASON_INSUFFICIENT_CAPACITY
+            msg = f"Scheduled {len(matched)} of {desired} replicas (checked {len(self.clusters)} clusters)"
         elif scheduled:
             reason = CONDITION_REASON_REPLICAS_CREATED
             msg = f"Scheduled {len(matched)} of {desired} replicas"
         else:
             reason = CONDITION_REASON_SCHEDULING
-            msg = ""
+            msg = f"Created {created} of {desired} replicas"
 
         response.set_conditions(
             self.rsp,
@@ -686,9 +711,33 @@ class Composer:
                 message=msg,
             ),
         )
+        return scheduled
 
-    def derive_replicas_ready(self, matched: list[scheduling.Candidate]) -> None:
-        """ReplicasReady: all replicas are serving traffic."""
+    def derive_replicas_serving(self, matched: list[scheduling.Candidate]) -> None:
+        """ReplicasServing: at least one replica is serving and routed."""
+        desired = int(self.xr.spec.replicas)
+        serving = sum(1 for c in matched if name.endpoint_key(c) in self.rsp.desired.resources)
+
+        if serving:
+            reason = CONDITION_REASON_SERVING
+        elif matched:
+            reason = CONDITION_REASON_MODEL_STARTING
+        else:
+            reason = CONDITION_REASON_NO_REPLICAS_SCHEDULED
+
+        response.set_conditions(
+            self.rsp,
+            resource.Condition(
+                typ=CONDITION_TYPE_REPLICAS_SERVING,
+                status="True" if serving else "False",
+                reason=reason,
+                message=f"{serving} of {desired} replicas serving",
+            ),
+        )
+
+    def derive_replicas_ready(self, matched: list[scheduling.Candidate]) -> bool:
+        """ReplicasReady: every desired replica is at full capacity."""
+        desired = int(self.xr.spec.replicas)
         replicas_ready = 0
         for c in matched:
             replica_key = name.replica_key(c)
@@ -696,17 +745,17 @@ class Composer:
                 self.rsp.desired.resources[replica_key].ready = fnv1.READY_TRUE
                 replicas_ready += 1
 
-        all_ready = len(matched) > 0 and replicas_ready == len(matched)
+        all_ready = replicas_ready >= desired
+        serving = any(name.endpoint_key(c) in self.rsp.desired.resources for c in matched)
 
         if not matched:
             reason = CONDITION_REASON_NO_REPLICAS_SCHEDULED
-            msg = ""
         elif all_ready:
             reason = CONDITION_REASON_ALL_REPLICAS_READY
-            msg = f"{replicas_ready} of {len(matched)} ready"
+        elif serving:
+            reason = CONDITION_REASON_DEGRADED
         else:
             reason = CONDITION_REASON_MODEL_STARTING
-            msg = f"{replicas_ready} of {len(matched)} ready"
 
         response.set_conditions(
             self.rsp,
@@ -714,9 +763,10 @@ class Composer:
                 typ=CONDITION_TYPE_REPLICAS_READY,
                 status="True" if all_ready else "False",
                 reason=reason,
-                message=msg,
+                message=f"{replicas_ready} of {desired} ready",
             ),
         )
+        return all_ready
 
     def mark_endpoint_readiness(self, matched: list[scheduling.Candidate]) -> None:
         """Mark each composed ModelEndpoint Ready when observed Ready."""

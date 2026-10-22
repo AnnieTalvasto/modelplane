@@ -185,11 +185,6 @@ class GroveBackend:
         # terminationDelay. A copy is still all-or-nothing through its cliques'
         # own minAvailable. Fields the defaulting webhook would fill in are set
         # explicitly so provider-kubernetes doesn't fight it on every reconcile.
-        #
-        # NOTE(negz): the cost is that a replica reports available once one copy
-        # serves, since PodCliqueSet.status.availableReplicas is the only signal
-        # Grove populates - status.podGangStatuses exists on the type but
-        # nothing writes it.
         copies = int(engine.copies or 1)
         pod_clique_set = {
             "apiVersion": "grove.io/v1alpha1",
@@ -214,9 +209,24 @@ class GroveBackend:
             },
         }
 
+        # The PodCliqueSet is available once one copy is, so a second Object
+        # observes the scaling group Grove creates under it, which counts every
+        # copy. Grove names it <set>-<set replica index>-<group>.
+        scaling_group = {
+            "apiVersion": "grove.io/v1alpha1",
+            "kind": "PodCliqueScalingGroup",
+            "metadata": {"name": f"{name}-0-{base.GROVE_PCSG}", "namespace": base.remote_namespace(replica)},
+        }
         composed = {
             base.workload_key(engine): base.wrap_object(
-                provider_config, pod_clique_set, cel_query=base.GROVE_AVAILABLE_CEL
+                provider_config, pod_clique_set, cel_query=base.GROVE_AVAILABLE_CEL, watch=True
+            ),
+            base.scaling_group_key(engine): base.wrap_object(
+                provider_config,
+                scaling_group,
+                cel_query=base.GROVE_ALL_COPIES_READY_CEL,
+                watch=True,
+                observe_only=True,
             ),
         }
         # One ResourceClaimTemplate per claiming member. The leader and worker

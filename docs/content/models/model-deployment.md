@@ -232,8 +232,10 @@ independently:
 - **`engines[].copies`** runs several identical copies of one engine within a
   replica, on the same cluster. It's a fixed number, sized once, never
   autoscaled. Copies make a replica more resilient within its cluster: a node
-  failure drops one copy instead of taking the whole replica out of service. In
-  disaggregated serving they also set the prefill-to-decode ratio.
+  failure drops one copy instead of taking the whole replica out of service:
+  the replica serves, and reports `ModelServing`, while at least one copy of
+  each engine is ready. It's `Ready` only when every copy is.
+  In disaggregated serving copies also set the prefill-to-decode ratio.
 - **`worker.nodes`** sets how many nodes one gang spans: a `Leader` plus that
   many `Worker` pods. It's how big one multi-node engine is.
 

@@ -164,7 +164,7 @@ class LLMDBackend:
 
         composed = {
             base.workload_key(engine): base.wrap_object(
-                provider_config, leader_worker_set, cel_query=base.AVAILABLE_CEL
+                provider_config, leader_worker_set, cel_query=base.ALL_COPIES_READY_CEL, watch=True
             ),
         }
         # One ResourceClaimTemplate per claiming member. The leader and worker

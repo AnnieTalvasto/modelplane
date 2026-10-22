@@ -432,8 +432,12 @@ def _deployment(
             "providerConfigRef": {"kind": "ClusterProviderConfig", "name": "cluster-a-pc"},
             "readiness": {
                 "policy": "DeriveFromCelQuery",
-                "celQuery": 'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")',
+                "celQuery": (
+                    'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")'
+                    " && has(object.status.readyReplicas) && object.status.readyReplicas >= object.spec.replicas"
+                ),
             },
+            "watch": True,
             "forProvider": {
                 "manifest": {
                     "apiVersion": "apps/v1",
@@ -485,8 +489,12 @@ def _leader_worker_set(
             "providerConfigRef": {"kind": "ClusterProviderConfig", "name": "cluster-a-pc"},
             "readiness": {
                 "policy": "DeriveFromCelQuery",
-                "celQuery": 'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")',
+                "celQuery": (
+                    'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")'
+                    " && has(object.status.readyReplicas) && object.status.readyReplicas >= object.spec.replicas"
+                ),
             },
+            "watch": True,
             "forProvider": {
                 "manifest": {
                     "apiVersion": "leaderworkerset.x-k8s.io/v1",
@@ -547,6 +555,31 @@ def _leader_worker_set(
     }
 
 
+def _scaling_group(*, pcs_name: str) -> dict:
+    """The observe-only Object reading the scaling group Grove creates under a PodCliqueSet."""
+    return {
+        "spec": {
+            "providerConfigRef": {"kind": "ClusterProviderConfig", "name": "cluster-a-pc"},
+            "readiness": {
+                "policy": "DeriveFromCelQuery",
+                "celQuery": (
+                    "has(object.status) && has(object.status.availableReplicas) && "
+                    "object.status.availableReplicas >= object.spec.replicas"
+                ),
+            },
+            "forProvider": {
+                "manifest": {
+                    "apiVersion": "grove.io/v1alpha1",
+                    "kind": "PodCliqueScalingGroup",
+                    "metadata": {"name": f"{pcs_name}-0-gang", "namespace": "mp-ml-team-51733"},
+                }
+            },
+            "watch": True,
+            "managementPolicies": ["Observe"],
+        }
+    }
+
+
 def _pod_clique_set(*, name: str, cliques: list[dict]) -> dict:
     """The Object composing a Leader/Worker engine's PodCliqueSet, from its leader and worker cliques."""
     return {
@@ -556,6 +589,7 @@ def _pod_clique_set(*, name: str, cliques: list[dict]) -> dict:
                 "policy": "DeriveFromCelQuery",
                 "celQuery": "has(object.status) && has(object.status.observedGeneration) && object.status.observedGeneration == object.metadata.generation && object.spec.replicas > 0 && has(object.status.availableReplicas) && object.status.availableReplicas >= object.spec.replicas",
             },
+            "watch": True,
             "forProvider": {
                 "manifest": {
                     "apiVersion": "grove.io/v1alpha1",
@@ -2022,6 +2056,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -2240,6 +2275,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -2453,6 +2489,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -2669,6 +2706,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -2890,6 +2928,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -3092,6 +3131,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -3292,6 +3332,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -3490,6 +3531,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -3757,6 +3799,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -4035,6 +4078,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -6485,6 +6529,7 @@ APPLY_CASES = [
                 volumes=[{"name": "dshm", "emptyDir": {"medium": "Memory"}}],
             ),
             "resource-claim-prefill-standalone": _claim_template(name="r-prefill-standalone-devices-f62af", count=1),
+            "scaling-group-decode": _scaling_group(pcs_name="r-decode-4b27b"),
             "model-serving-decode": _pod_clique_set(
                 name="r-decode-4b27b",
                 cliques=[
@@ -6778,6 +6823,7 @@ APPLY_CASES = [
                 ],
             ),
             "resource-claim-prefill-standalone": _claim_template(name="r-prefill-standalone-devices-f62af", count=1),
+            "scaling-group-decode": _scaling_group(pcs_name="r-decode-4b27b"),
             "model-serving-decode": _pod_clique_set(
                 name="r-decode-4b27b",
                 cliques=[

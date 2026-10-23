@@ -18,6 +18,11 @@ spec:
     - name: REPLICAS
       type: string
       jsonPath: .status.replicas.ready
+    # Ready means every replica is at full capacity, so a degraded deployment
+    # reads not Ready while it still serves. This column shows that it does.
+    - name: SERVING
+      type: string
+      jsonPath: .status.conditions[?(@.type=='ReplicasServing')].status
     # Serve a scale subresource so `kubectl scale` and event-driven autoscalers
     # (e.g. KEDA) can drive spec.replicas, the deployment's single scaling axis.
     # statusReplicasPath points at the count of scheduled replicas, mirroring how

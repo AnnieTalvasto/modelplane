@@ -17,7 +17,12 @@ spec:
     additionalPrinterColumns:
     - name: REPLICAS
       type: string
+      description: The number of replicas at full capacity.
       jsonPath: .status.replicas.ready
+    - name: SERVING
+      type: string
+      description: Whether at least one replica is serving and routed.
+      jsonPath: .status.conditions[?(@.type=='ReplicasServing')].status
     # Serve a scale subresource so `kubectl scale` and event-driven autoscalers
     # (e.g. KEDA) can drive spec.replicas, the deployment's single scaling axis.
     # statusReplicasPath points at the count of scheduled replicas, mirroring how

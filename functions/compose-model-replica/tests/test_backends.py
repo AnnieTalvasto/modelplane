@@ -24,8 +24,11 @@ A device request's CEL selector is as compose-model-deployment stamps it.
 import copy
 import dataclasses
 import json
+from typing import Any
 
 import pytest
+from crossplane.function import resource
+from crossplane.function.proto.v1 import run_function_pb2 as fnv1
 from function import routing
 from function.backends import base, grove, llmd, native
 from models.ai.modelplane.modelreplica import v1alpha1
@@ -128,6 +131,17 @@ class GrovePcsNameCase:
     reason: str
     replica: v1alpha1.ModelReplica
     want: str
+
+
+@dataclasses.dataclass
+class ReadyCopiesCase:
+    """A test case for a backend's ready_copies."""
+
+    name: str
+    reason: str
+    backend: base.Backend
+    observed: dict[str, fnv1.Resource]
+    want: int
 
 
 @dataclasses.dataclass
@@ -432,8 +446,12 @@ def _deployment(
             "providerConfigRef": {"kind": "ClusterProviderConfig", "name": "cluster-a-pc"},
             "readiness": {
                 "policy": "DeriveFromCelQuery",
-                "celQuery": 'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")',
+                "celQuery": (
+                    'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")'
+                    " && has(object.status.readyReplicas) && object.status.readyReplicas >= object.spec.replicas"
+                ),
             },
+            "watch": True,
             "forProvider": {
                 "manifest": {
                     "apiVersion": "apps/v1",
@@ -485,8 +503,12 @@ def _leader_worker_set(
             "providerConfigRef": {"kind": "ClusterProviderConfig", "name": "cluster-a-pc"},
             "readiness": {
                 "policy": "DeriveFromCelQuery",
-                "celQuery": 'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")',
+                "celQuery": (
+                    'has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Available" && c.status == "True")'
+                    " && has(object.status.readyReplicas) && object.status.readyReplicas >= object.spec.replicas"
+                ),
             },
+            "watch": True,
             "forProvider": {
                 "manifest": {
                     "apiVersion": "leaderworkerset.x-k8s.io/v1",
@@ -547,6 +569,31 @@ def _leader_worker_set(
     }
 
 
+def _scaling_group(*, pcs_name: str) -> dict:
+    """The observe-only Object reading the scaling group Grove creates under a PodCliqueSet."""
+    return {
+        "spec": {
+            "providerConfigRef": {"kind": "ClusterProviderConfig", "name": "cluster-a-pc"},
+            "readiness": {
+                "policy": "DeriveFromCelQuery",
+                "celQuery": (
+                    "has(object.status) && has(object.status.availableReplicas) && "
+                    "object.status.availableReplicas >= object.spec.replicas"
+                ),
+            },
+            "forProvider": {
+                "manifest": {
+                    "apiVersion": "grove.io/v1alpha1",
+                    "kind": "PodCliqueScalingGroup",
+                    "metadata": {"name": f"{pcs_name}-0-gang", "namespace": "mp-ml-team-51733"},
+                }
+            },
+            "watch": True,
+            "managementPolicies": ["Observe"],
+        }
+    }
+
+
 def _pod_clique_set(*, name: str, cliques: list[dict]) -> dict:
     """The Object composing a Leader/Worker engine's PodCliqueSet, from its leader and worker cliques."""
     return {
@@ -556,6 +603,7 @@ def _pod_clique_set(*, name: str, cliques: list[dict]) -> dict:
                 "policy": "DeriveFromCelQuery",
                 "celQuery": "has(object.status) && has(object.status.observedGeneration) && object.status.observedGeneration == object.metadata.generation && object.spec.replicas > 0 && has(object.status.availableReplicas) && object.status.availableReplicas >= object.spec.replicas",
             },
+            "watch": True,
             "forProvider": {
                 "manifest": {
                     "apiVersion": "grove.io/v1alpha1",
@@ -658,8 +706,8 @@ def _sorted(*, objects: dict[str, dict]) -> dict[str, dict]:
 
 
 BUILD_CASES = [
-    # A Deployment reports readiness from its Available condition, and a claim
-    # template is ready once it's created. The engine and role labels are what
+    # A Deployment is ready once it's Available with every copy ready, and a
+    # claim template once it's created. The engine and role labels are what
     # the collector attributes the pod's metrics to.
     BuildCase(
         name="StandaloneEngine",
@@ -1929,14 +1977,15 @@ BUILD_CASES = [
     # a gang engine's command computes its own rank from GROVE_PCLQ_POD_INDEX.
     #
     # A PodCliqueSet publishes no Available condition, so its readiness derives
-    # from its replica counters. A worker with no template metadata carries only
+    # from its replica counters, and an observed scaling group counts every
+    # copy. A worker with no template metadata carries only
     # the managed labels, and with no cache there's no ModelExpress env or
     # security context.
     BuildCase(
         name="GroveGang",
         reason=(
-            "A Leader/Worker engine on Grove composes a PodCliqueSet with its members' commands verbatim, and a claim "
-            "template for each member."
+            "A Leader/Worker engine on Grove composes a PodCliqueSet with its members' commands verbatim, an observed "
+            "scaling group, and a claim template for each member."
         ),
         backend=grove.GroveBackend(),
         replica=_replica(
@@ -2022,6 +2071,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -2240,6 +2290,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -2453,6 +2504,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -2669,6 +2721,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -2890,6 +2943,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -3092,6 +3146,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -3292,6 +3347,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -3490,6 +3546,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -3757,6 +3814,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -4035,6 +4093,7 @@ BUILD_CASES = [
         serving_label="r",
         stack="Dynamo",
         want={
+            "scaling-group-main": _scaling_group(pcs_name="r-main-bb4e3"),
             "model-serving-main": _pod_clique_set(
                 name="r-main-bb4e3",
                 cliques=[
@@ -4229,8 +4288,8 @@ BUILD_CASES = [
     # replica's Service can't route to them. They do carry the telemetry
     # identity: a worker holds GPUs, and its metrics are the deployment's. Every
     # gang container leads with the backend-neutral coordination vars aliasing
-    # LWS_LEADER_ADDRESS and LWS_WORKER_INDEX. A LeaderWorkerSet reports
-    # readiness from its Available condition.
+    # LWS_LEADER_ADDRESS and LWS_WORKER_INDEX. A LeaderWorkerSet is ready once
+    # it's Available with every group ready.
     BuildCase(
         name="LLMDGang",
         reason=(
@@ -6485,6 +6544,7 @@ APPLY_CASES = [
                 volumes=[{"name": "dshm", "emptyDir": {"medium": "Memory"}}],
             ),
             "resource-claim-prefill-standalone": _claim_template(name="r-prefill-standalone-devices-f62af", count=1),
+            "scaling-group-decode": _scaling_group(pcs_name="r-decode-4b27b"),
             "model-serving-decode": _pod_clique_set(
                 name="r-decode-4b27b",
                 cliques=[
@@ -6778,6 +6838,7 @@ APPLY_CASES = [
                 ],
             ),
             "resource-claim-prefill-standalone": _claim_template(name="r-prefill-standalone-devices-f62af", count=1),
+            "scaling-group-decode": _scaling_group(pcs_name="r-decode-4b27b"),
             "model-serving-decode": _pod_clique_set(
                 name="r-decode-4b27b",
                 cliques=[
@@ -9289,3 +9350,90 @@ TELEMETRY_LABELS_CASES = [
 def test_telemetry_labels(case: TelemetryLabelsCase) -> None:
     """A serving pod carries the identity its metrics are attributed to."""
     assert base.telemetry_labels(case.replica, case.engine, case.member) == case.want, case.reason
+
+
+def _observed(*, status: dict | None, ready: bool) -> fnv1.Resource:
+    """A composed Object as observed back, reading a remote resource with status, or none observed yet."""
+    observed: dict[str, Any] = {
+        "conditions": [
+            {
+                "type": "Ready",
+                "status": "True" if ready else "False",
+                "reason": "Available" if ready else "Unavailable",
+                "lastTransitionTime": "2025-01-01T00:00:00Z",
+            }
+        ]
+    }
+    if status is not None:
+        observed["atProvider"] = {"manifest": {"status": status}}
+    obj = {
+        "apiVersion": "kubernetes.m.crossplane.io/v1alpha1",
+        "kind": "Object",
+        "spec": {"forProvider": {"manifest": {}}},
+        "status": observed,
+    }
+    return fnv1.Resource(resource=resource.dict_to_struct(obj))
+
+
+def _main_engine() -> v1alpha1.Engine:
+    """An engine named main, whose workload and scaling group keys the observed resources use."""
+    return v1alpha1.Engine(
+        name="main",
+        copies=2,
+        members=[v1alpha1.Member(role="Standalone", nodePoolName="frontier", template=v1alpha1.Template())],
+    )
+
+
+READY_COPIES_CASES = [
+    ReadyCopiesCase(
+        name="DeploymentReadyPods",
+        reason="A Deployment counts each ready pod as a copy.",
+        backend=native.NativeBackend(),
+        observed={"model-serving-main": _observed(status={"readyReplicas": 1}, ready=False)},
+        want=1,
+    ),
+    ReadyCopiesCase(
+        name="DeploymentNoneReady",
+        reason="A Deployment leaves readyReplicas out at 0, so it counts no copies.",
+        backend=native.NativeBackend(),
+        observed={"model-serving-main": _observed(status={}, ready=False)},
+        want=0,
+    ),
+    ReadyCopiesCase(
+        name="LeaderWorkerSetGroups",
+        reason="A LeaderWorkerSet counts each ready group as a copy.",
+        backend=llmd.LLMDBackend(),
+        observed={"model-serving-main": _observed(status={"readyReplicas": 2}, ready=True)},
+        want=2,
+    ),
+    ReadyCopiesCase(
+        name="GroveScalingGroup",
+        reason="A Grove engine counts its scaling group's available copies, not its PodCliqueSet's.",
+        backend=grove.GroveBackend(),
+        observed={
+            "model-serving-main": _observed(status={"availableReplicas": 1}, ready=True),
+            "scaling-group-main": _observed(status={"availableReplicas": 1}, ready=False),
+        },
+        want=1,
+    ),
+    ReadyCopiesCase(
+        name="GroveScalingGroupUnobserved",
+        reason="Until its scaling group is observed, a ready PodCliqueSet means one copy is ready.",
+        backend=grove.GroveBackend(),
+        observed={"model-serving-main": _observed(status={"availableReplicas": 1}, ready=True)},
+        want=1,
+    ),
+    ReadyCopiesCase(
+        name="GroveNotObserved",
+        reason="A Grove engine with nothing observed has no copies ready.",
+        backend=grove.GroveBackend(),
+        observed={},
+        want=0,
+    ),
+]
+
+
+@pytest.mark.parametrize("case", READY_COPIES_CASES, ids=lambda case: case.name)
+def test_ready_copies(case: ReadyCopiesCase) -> None:
+    """A backend counts an engine's ready copies from its observed workload."""
+    assert case.backend.ready_copies(_main_engine(), case.observed) == case.want, case.reason

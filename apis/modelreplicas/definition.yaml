@@ -17,7 +17,12 @@ spec:
     additionalPrinterColumns:
     - name: CLUSTER
       type: string
+      description: The InferenceCluster the replica runs on.
       jsonPath: .spec.clusterName
+    - name: SERVING
+      type: string
+      description: Whether at least one copy of every engine is ready and routed.
+      jsonPath: .status.conditions[?(@.type=='ModelServing')].status
     schema:
       openAPIV3Schema:
         type: object

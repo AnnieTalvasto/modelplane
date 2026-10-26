@@ -91,7 +91,9 @@ CLOUDS: dict[str, Cloud] = {
     # tolerations are operator: Equal, value: "true" (AKS admission rejects
     # wildcards), so any other value would wrongly exclude them.
     # kubernetes.azure.com/accelerator is AKS's own GPU pool label; the
-    # stack's nvidia-toolkit-hardening DaemonSet node-affines to it.
+    # stack's nvidia-toolkit-hardening DaemonSet node-affines to it. AKS is
+    # the one cloud whose stack enables nvsentinel's NIC health monitor, so
+    # its pods belong on the GPU pool too.
     "aks": Cloud(
         cloud="AKS",
         labels={
@@ -112,7 +114,7 @@ CLOUDS: dict[str, Cloud] = {
             "monitoring/prometheus-node-exporter": 3,
             "gpu-operator/nvidia-toolkit-hardening": 2,
         },
-        gpu_workloads=("^nvidia-toolkit-hardening",),
+        gpu_workloads=("^nvidia-toolkit-hardening", "^nic-health-monitor"),
     ),
     # Carries the pool labels the dra gpuStack profile requires
     # (gke-no-default-nvidia-gpu-device-plugin disables GKE's managed device

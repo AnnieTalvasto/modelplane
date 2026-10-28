@@ -177,7 +177,7 @@ The sidecar and the picker must match your engines:
 
 
 <!-- vale ai-tells.BareNames = NO -->
-The sidecar's `--vllm-port` names the decode engine's port, whatever the engine
+The sidecar's `--vllm-port` specifies the decode engine's port, whatever the engine
 is.
 <!-- vale ai-tells.BareNames = YES -->
 

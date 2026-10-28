@@ -222,7 +222,7 @@ and no other container declares it. A `Worker` member doesn't need a container
 on 8000, because worker pods don't receive requests.
 
 Behind the sidecar, the decode port appears in three places: the `--port` flag
-on the engine, its `http` port, and the sidecar flag that names the engine's
+on the engine, its `http` port, and the sidecar flag that specifies the engine's
 port. Keep the three the same. Modelplane doesn't read engine args to check
 them.
 

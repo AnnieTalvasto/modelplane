@@ -175,8 +175,11 @@ The sidecar and the picker must match your engines:
 | vLLM with `MooncakeConnector` | `mooncake` | Any |
 | SGLang, any transfer backend | `sglang` | `always-disagg-pd-decider`. An SGLang decode engine rejects a request that skips prefill. |
 
+
+<!-- vale ai-tells.BareNames = NO -->
 The sidecar's `--vllm-port` names the decode engine's port, whatever the engine
 is.
+<!-- vale ai-tells.BareNames = YES -->
 
 A decode pod without the sidecar sends every request to decode alone. vLLM
 serves it, and SGLang rejects it.

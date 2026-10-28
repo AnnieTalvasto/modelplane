@@ -135,7 +135,7 @@ You rarely choose them directly. Above them sits the **engine**. Above that, a
 **control plane** deploys and manages engines, because sooner or later you run
 more than one. On top, a **gateway** routes traffic across models and replicas.
 
-![Inference stack: four layers and the clients they serve](inference-stack.png)
+{{< img src="/media/inference-stack.png" alt="Inference stack: four layers and the clients they serve" >}}
 
 *Inference stack: four layers and the clients they serve*
 
